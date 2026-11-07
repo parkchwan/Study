@@ -14,7 +14,5 @@ if not exist .env (
   echo  .env 파일을 만들었습니다. 메모장에서 GEMINI_API_KEY 를 입력하고 저장한 뒤 창을 닫으세요.
   notepad .env
 )
-echo [3/3] 서버 시작: http://localhost:8000  (이 창을 닫으면 종료됩니다)
-start "" http://localhost:8000
-python -m uvicorn app.main:app --port 8000
+python run.py
 pause

@@ -12,6 +12,4 @@ if [ ! -f .env ]; then
   (command -v open >/dev/null && open -e .env) || true
   exit 0
 fi
-echo "[3/3] 서버 시작: http://localhost:8000"
-( sleep 2; (command -v open >/dev/null && open http://localhost:8000) || (command -v xdg-open >/dev/null && xdg-open http://localhost:8000) ) >/dev/null 2>&1 &
-exec python -m uvicorn app.main:app --port 8000
+exec python run.py
