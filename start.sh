@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 . .venv/bin/activate
 echo "[2/3] 필요한 패키지 확인 중..."
 pip install -q -r requirements.txt
+python migrate.py
 if [ ! -f .env ]; then
   cp .env.example .env
   echo ".env 파일을 만들었습니다. GEMINI_API_KEY 를 입력하고 다시 실행하세요: $(pwd)/.env"

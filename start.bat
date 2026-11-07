@@ -8,6 +8,7 @@ if not exist .venv (
 call .venv\Scripts\activate.bat
 echo [2/3] 필요한 패키지 확인 중...
 pip install -q -r requirements.txt
+python migrate.py
 if not exist .env (
   copy .env.example .env >nul
   echo.
