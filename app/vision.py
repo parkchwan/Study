@@ -86,7 +86,17 @@ def looks_like_toc(text: str) -> bool:
     """'제1장 총칙 ······ 12'처럼 줄 끝에 쪽 번호가 붙은 줄이 많으면 목차 페이지."""
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
     hits = sum(1 for l in lines if _TOC_LINE.search(l))
-    return hits >= 8 and hits >= len(lines) * 0.3
+    if hits >= 8 and hits >= len(lines) * 0.3:
+        return True
+    # 점선이 없는 목차: '1. 콘크리트 공사 12'처럼 글 뒤 숫자(쪽 번호)가 줄마다 차례로 커짐
+    nums = [int(m.group(1)) for l in lines if (m := _TAIL_NUM.search(l))]
+    if len(nums) < 8 or len(nums) < len(lines) * 0.4:
+        return False
+    rising = sum(1 for a, b in zip(nums, nums[1:]) if b >= a)
+    return rising >= (len(nums) - 1) * 0.8 and nums[-1] - nums[0] >= len(nums)
+
+
+_TAIL_NUM = re.compile(r"[가-힣A-Za-z)\]]\s+(\d{1,4})\s*$")
 
 
 def max_tokens() -> int:

@@ -540,3 +540,25 @@ def test_numeric_table_is_not_toc():
     from app import vision
     table = "\n".join(f"압축강도 {i}   {i * 3}" for i in range(20))
     assert not vision.looks_like_toc(table)
+
+
+def test_toc_without_leaders_and_export_filter(env):
+    import json
+    tmp, db, job, settings = env
+    from app import vision
+    from app.export import export_site
+    toc = "\n".join(f"{i}. 콘크리트 공사 {i * 9 + 3}" for i in range(1, 16))
+    assert vision.looks_like_toc(toc)
+    assert not vision.looks_like_toc("\n".join(f"측정값 {v}" for v in [30, 12, 45, 8, 22, 51, 3, 40, 19, 27]))
+    # DB에 예전 방식으로 저장된 목차/목록 항목 → 내보낼 때 빠지는지
+    db.save_file({"file_id": "O", "name": "o.pdf", "mime_type": "application/pdf", "path": "/", "web_link": "",
+                  "version_key": "1"},
+                 [{"page_key": "O_1", "page_no": 1, "width": 1, "height": 1, "text": toc,
+                   "items": [{"kind": "table", "title": "제1편 구성", "description": "", "keywords": []}]},
+                  {"page_key": "O_2", "page_no": 2, "width": 1, "height": 1, "text": "",
+                   "items": [{"kind": "table", "title": "기출문제 리스트", "description": "", "keywords": []}]},
+                  {"page_key": "O_3", "page_no": 3, "width": 1, "height": 1, "text": "",
+                   "items": [{"kind": "chart", "title": "측압 분포", "description": "", "keywords": []}]}])
+    out = tmp / "web"; export_site(db, out)
+    keys = [p[0] for p in json.loads((out / "data.json").read_text(encoding="utf-8"))["pages"]]
+    assert keys == ["O_3"]

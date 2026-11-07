@@ -38,7 +38,15 @@ def _sync_dir(src: Path, dst: Path, keep: set[str]) -> None:
 def build_payload(db: DB) -> tuple[dict, dict, list]:
     """(data, text, thesaurus): 화면이 쓰는 데이터. NAS 내보내기와 PC 화면이 같은 것을 씀."""
     from . import thesaurus
-    pages = db.export_pages()
+    from .vision import is_junk, looks_like_toc
+    # 내보낼 때도 목차·색인·단순 목록·로고를 거름 → 파일을 다시 처리하기 전이라도 바로 반영
+    pages = []
+    for p in db.export_pages(with_text=True):
+        toc = looks_like_toc(p.pop("text", ""))
+        items = [it for it in p["items"] if not is_junk(it) and not (toc and it["kind"] != "handwriting")]
+        if items:
+            p["items"] = items
+            pages.append(p)
     # 태블릿이 처음 받는 data.json은 최대한 작게: 파일 정보는 한 번만, 항목은 [종류, 제목, 짧은 설명]만.
     # 본문(OCR)·손글씨 전문·키워드는 text.json에 따로 → 화면을 먼저 띄운 뒤 받아서 검색/상세 표시
     files: list[list] = []
