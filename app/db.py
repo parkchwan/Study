@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS vision_cache (
     result_json  TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS thesaurus (
+    term         TEXT PRIMARY KEY,   -- 정규화된 용어
+    variants     TEXT                -- JSON 배열: [원래 표기, 동의어...]
+);
 """
 
 
@@ -222,6 +226,18 @@ class DB:
             it["s"] = " ".join(str(v) for v in (r["kind"], r["title"], r["description"], r["keywords"]) if v).lower()
             p["items"].append(it)
         return [p for p in out.values() if p["items"]]
+
+    # ── 동의어 사전 ──
+    def thesaurus_terms(self) -> set[str]:
+        return {r["term"] for r in self.conn.execute("SELECT term FROM thesaurus")}
+
+    def thesaurus_save(self, entries: dict[str, list[str]]) -> None:
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO thesaurus(term, variants) VALUES(?, ?)",
+                                  [(k, json.dumps(v, ensure_ascii=False)) for k, v in entries.items() if k])
+
+    def thesaurus_groups(self) -> list[list[str]]:
+        return [json.loads(r["variants"]) for r in self.conn.execute("SELECT variants FROM thesaurus")]
 
     def stats(self) -> dict:
         c = self.conn
