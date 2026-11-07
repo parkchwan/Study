@@ -67,6 +67,10 @@ class IndexJob:
                 try:
                     local = drive.fetch(meta, settings.cache_dir)
                     self.index_local_file(meta, local, router)
+                except extract.OfficeUnavailable:
+                    # LibreOffice가 없으면 엑셀·워드·파워포인트는 조용히 건너뜀 (오류 아님)
+                    log.warning("건너뜀(LibreOffice 없음): %s", meta["name"])
+                    st["skipped_office"] = st.get("skipped_office", 0) + 1
                 except Exception as e:
                     log.exception("색인 실패: %s", meta["name"])
                     st["errors"].append(f"{meta['name']}: {e}")

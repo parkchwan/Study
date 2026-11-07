@@ -66,6 +66,10 @@ class PageInfo:
         return items
 
 
+class OfficeUnavailable(RuntimeError):
+    """Office 파일인데 LibreOffice가 설치되어 있지 않음."""
+
+
 def to_pdf(path: Path) -> Path:
     """Office 파일을 LibreOffice로 PDF 변환 (설치되어 있을 때)."""
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
@@ -77,7 +81,7 @@ def to_pdf(path: Path) -> Path:
                 soffice = c
                 break
     if not soffice:
-        raise RuntimeError("Office 파일 변환에는 LibreOffice가 필요합니다.")
+        raise OfficeUnavailable("Office 파일 변환에는 LibreOffice가 필요합니다.")
     out = Path(tempfile.mkdtemp())
     subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out), str(path)],
                    check=True, capture_output=True, timeout=300)

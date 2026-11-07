@@ -81,7 +81,8 @@ def _parse(text: str) -> list[dict]:
     if text.startswith("```"):
         text = text.strip("`")
         text = text[text.find("{"):]
-    data = json.loads(text[text.find("{"): text.rfind("}") + 1])
+    # strict=False: 문자열 안의 줄바꿈 등 제어문자 허용 (손글씨 받아 적기에서 자주 나옴)
+    data = json.loads(text[text.find("{"): text.rfind("}") + 1], strict=False)
     items = []
     for it in data.get("items", []):
         kind = str(it.get("kind", "figure")).lower()
@@ -111,12 +112,31 @@ class Blocked(Exception):
 
 BLOCK_REASONS = {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY", "OTHER"}
 _thinking_cfg_ok = True     # 모델이 thinkingConfig를 거부하면 False로 바꾸고 빼고 보냄
+_schema_ok = True           # 모델이 responseSchema를 거부하면 False로 바꾸고 빼고 보냄
+
+# 답 형식을 강제하는 설계도: 이걸 주면 Gemini가 따옴표 등을 올바르게 처리해 JSON이 깨지지 않음
+RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"items": {"type": "ARRAY", "items": {
+        "type": "OBJECT",
+        "properties": {
+            "kind": {"type": "STRING", "enum": KINDS},
+            "title": {"type": "STRING"},
+            "description": {"type": "STRING"},
+            "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+        },
+        "required": ["kind", "title", "description"],
+    }}},
+    "required": ["items"],
+}
 
 
 def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list[dict]:
-    global _thinking_cfg_ok
+    global _thinking_cfg_ok, _schema_ok
     model = model or settings.gemini_model
     gen = {"responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": max_tokens()}
+    if _schema_ok:
+        gen["responseSchema"] = RESPONSE_SCHEMA
     if _thinking_cfg_ok:
         # '생각(thinking)' 토큰은 출력 요금으로 청구되고 답 길이 한도도 잡아먹음 → 최소로
         gen["thinkingConfig"] = {"thinkingLevel": "minimal"}
@@ -134,6 +154,9 @@ def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list
         raise ModelNotFound(model)
     if r.status_code == 400 and _thinking_cfg_ok and "think" in r.text.lower():
         _thinking_cfg_ok = False                 # 이 모델은 해당 설정을 지원 안 함 → 빼고 다시
+        return _gemini(client, jpeg, model)
+    if r.status_code == 400 and _schema_ok and "schema" in r.text.lower():
+        _schema_ok = False
         return _gemini(client, jpeg, model)
     if r.status_code in (400, 401) and "api key" in r.text.lower().replace("_", " "):
         raise QuotaError(f"gemini API 키 오류: {r.text[:200]}", 401)

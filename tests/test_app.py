@@ -415,3 +415,34 @@ def test_db_concurrent_read_write(env):
     ts = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(3)]
     [t.start() for t in ts]; [t.join() for t in ts]
     assert not errors, errors
+
+
+def test_schema_sent_and_fallback(monkeypatch):
+    import httpx, json as _j
+    from app import vision, config
+    monkeypatch.setattr(config.settings, "gemini_api_key", "k")
+    monkeypatch.setattr(vision, "_schema_ok", True); monkeypatch.setattr(vision, "_thinking_cfg_ok", False)
+    bodies = []
+    def handler(req):
+        b = _j.loads(req.content); bodies.append(b)
+        if "responseSchema" in b["generationConfig"]:
+            return httpx.Response(400, json={"error": {"message": "Invalid JSON payload: responseSchema unsupported"}})
+        # 문자열 안에 줄바꿈이 그대로 들어간 답 → strict=False 로 읽힘
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text":
+            '{"items":[{"kind":"handwriting","title":"t","description":"줄1\n줄2","keywords":[]}]}'}]}}]})
+    c = httpx.Client(transport=httpx.MockTransport(handler))
+    items = vision._gemini(c, b"i", "m")
+    assert "responseSchema" in bodies[0]["generationConfig"] and len(bodies) == 2
+    assert items[0]["description"] == "줄1\n줄2"
+
+
+def test_office_without_libreoffice_is_skipped(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import extract
+    from app.drive import LocalFolder
+    monkeypatch.setattr(extract.shutil, "which", lambda n: None)
+    monkeypatch.setattr(extract.Path, "exists", lambda self: False if "soffice" in str(self) else True)
+    root = tmp / "o"; root.mkdir(); (root / "a.xlsx").write_bytes(b"x")
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    st = job.status()
+    assert st["skipped_office"] == 1 and not st["errors"]
