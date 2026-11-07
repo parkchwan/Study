@@ -68,6 +68,13 @@ class IndexJob:
                 st["done"] += 1
                 st["ai_calls"] = dict(router.calls)
             st["ai_calls"] = dict(router.calls)
+            if settings.export_dir:            # NAS 보기 전용 사이트 자동 갱신
+                st["phase"] = "NAS로 내보내는 중"
+                from .export import export_site
+                try:
+                    export_site(self.db, Path(settings.export_dir))
+                except OSError as e:
+                    st["errors"].append(f"내보내기 실패: {e}")
             st["phase"] = "완료"
         except Exception as e:
             st["phase"] = "오류"

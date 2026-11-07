@@ -157,6 +157,28 @@ class DB:
             "SELECT kind, title, description, keywords, source FROM items WHERE page_key=? ORDER BY id", (page_key,))]
         return d
 
+    def export_pages(self) -> list[dict]:
+        """정적 사이트용: 페이지별 항목 + 검색 텍스트."""
+        out: dict[str, dict] = {}
+        rows = self.conn.execute(
+            "SELECT p.page_key, p.page_no, p.width, p.height, p.text, f.name AS file_name, f.path, f.web_link,"
+            " f.page_count FROM pages p JOIN files f ON f.file_id=p.file_id ORDER BY f.name, p.page_no")
+        for r in rows:
+            out[r["page_key"]] = {
+                "page_key": r["page_key"], "page_no": r["page_no"], "width": r["width"], "height": r["height"],
+                "file_name": r["file_name"], "path": r["path"], "web_link": r["web_link"],
+                "page_count": r["page_count"],
+                "t": " ".join(x for x in (r["file_name"], r["path"], (r["text"] or "")[:2000]) if x).lower(),
+                "items": []}
+        for r in self.conn.execute("SELECT page_key, kind, title, description, keywords, source FROM items ORDER BY id"):
+            p = out.get(r["page_key"])
+            if p is None:
+                continue
+            it = {k: r[k] for k in ("kind", "title", "description", "keywords", "source")}
+            it["s"] = " ".join(str(v) for v in (r["kind"], r["title"], r["description"], r["keywords"]) if v).lower()
+            p["items"].append(it)
+        return [p for p in out.values() if p["items"]]
+
     def stats(self) -> dict:
         c = self.conn
         return {

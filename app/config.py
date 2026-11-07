@@ -22,6 +22,8 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "data")))
     page_dpi: int = field(default_factory=lambda: _int("PAGE_DPI", 110))
     thumb_px: int = 360
+    # 보기 전용 사이트를 내보낼 폴더 (예: NAS의 web 공유폴더). 설정하면 색인 끝날 때 자동 내보내기
+    export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", ""))
 
     service_account_file: str = field(default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", ""))
     oauth_client_file: str = field(default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_FILE", ""))

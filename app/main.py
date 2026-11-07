@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from .config import settings
 from .db import DB
 from .drive import LocalFolder, local_dir, parse_folder_id
+from .export import export_site
 from .indexer import IndexJob
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -55,6 +56,16 @@ def start_index(req: IndexReq):
     if not job.start(folder_id, drive_factory=factory):
         raise HTTPException(409, "이미 색인 작업이 진행 중입니다.")
     return {"ok": True, "folder_id": folder_id}
+
+
+@app.post("/api/export")
+def export():
+    if not settings.export_dir:
+        raise HTTPException(400, ".env에 EXPORT_DIR(예: \\\\DS216play\\web\\drive-index)를 설정하세요.")
+    try:
+        return export_site(db, Path(settings.export_dir))
+    except OSError as e:
+        raise HTTPException(500, f"내보내기 실패 (NAS 폴더 접근 확인): {e}")
 
 
 @app.get("/api/status")

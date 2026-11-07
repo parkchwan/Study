@@ -137,3 +137,21 @@ def test_local_folder_mode(env):
     assert s["phase"] == "완료" and s["total"] == 1, s
     assert (root / "sub" / "a.pdf").exists()        # 원본은 절대 삭제하지 않음
     assert db.search("budget")[0]["path"] == "/sub"
+
+
+def test_static_export(env):
+    import json
+    tmp, db, job, settings = env
+    from app.export import export_site
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    job.index_local_file({"file_id": "E", "name": "e.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, pdf, None)
+    out = tmp / "nas_web"
+    r = export_site(db, out)
+    assert r["pages"] == 2
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    assert any("revenue" in it["s"] for p in data["pages"] for it in p["items"])
+    assert (out / "img" / "pages" / "E_2.webp").exists()
+    assert "const STATIC_MODE = true;" in (out / "index.html").read_text(encoding="utf-8")
+    db.delete_file("E"); export_site(db, out)      # 삭제된 페이지 이미지는 NAS에서도 정리
+    assert not (out / "img" / "pages" / "E_2.webp").exists()

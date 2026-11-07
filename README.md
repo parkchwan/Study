@@ -16,6 +16,21 @@ Google Drive의 **특정 폴더**를 지정하면, 그 폴더(하위 폴더 포�
 > 로컬 모드에서는 PDF·이미지·Office 파일을 처리합니다. Google 문서/슬라이드 원본(.gdoc/.gslides)은
 > 동기화 폴더에 바로가기로만 존재하므로, 필요하면 PDF로 저장해 두거나 아래 "Drive API 모드"를 쓰세요.
 
+## 📱 NAS로 휴대폰에서 24시간 보기 (Synology DS216play 등 Docker 안 되는 NAS)
+DS216play는 32비트 ARM·1GB RAM이라 앱을 NAS에서 직접 돌릴 수 없습니다. 대신 **색인은 PC, 보기는 NAS**로 나눕니다.
+NAS에는 검색 기능이 들어 있는 정적 웹페이지(`index.html` + `data.json` + 이미지)만 올라가고, 검색은 휴대폰 브라우저가 직접 처리합니다.
+
+1. DSM **패키지 센터 → Web Station** 설치 → `web` 공유폴더가 생깁니다.
+2. `web` 안에 `drive-index` 폴더를 만듭니다.
+3. PC의 `.env`에 `EXPORT_DIR=\\DS216play\web\drive-index` 추가 (NAS 이름 또는 IP)
+   - 탐색기 주소창에 `\\DS216play\web`을 입력해 열리는지 먼저 확인하세요.
+4. PC에서 색인 → 끝나면 **자동으로 NAS에 내보내짐** (수동: 화면의 **NAS로 내보내기** 버튼, 또는 `python -m app.export`)
+5. 휴대폰/태블릿에서 `http://NAS-IP/drive-index/` 접속 → 크롬 메뉴 **홈 화면에 추가**하면 앱처럼 사용
+6. 밖에서 보려면 NAS와 휴대폰에 **Tailscale** 설치(패키지 센터 또는 tailscale.com에서 DSM용 패키지) → 포트 개방 없이 안전하게 접속
+
+> 바뀐 이미지만 NAS로 복사하므로 재내보내기는 빠릅니다. 보기 전용 사이트에는 로그인 기능이 없으니
+> 공유기 포트포워딩으로 인터넷에 직접 열지 말고 Tailscale로만 외부 접속하세요.
+
 ## 지원 파일
 - PDF, 이미지(PNG/JPG/GIF/WebP 등)
 - Google 문서 / 슬라이드 / 스프레드시트 / 드로잉 (PDF로 내보내 처리)
@@ -71,6 +86,7 @@ app/
   vision.py    Gemini → OpenAI 라우터, 캐시, 호출 상한
   indexer.py   백그라운드 색인 작업 (증분)
   db.py        SQLite 색인/검색
+  export.py    NAS용 보기 전용 정적 사이트 내보내기
   static/index.html  검색·뷰어 화면
 tests/test_app.py    Drive/AI 없이 전체 파이프라인 테스트
 ```

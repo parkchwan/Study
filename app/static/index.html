@@ -67,10 +67,11 @@
 </head>
 <body>
 <header>
-  <div class="row">
+  <div class="row" id="adminRow">
     <h1>📁 Drive 시각자료 색인</h1>
     <input id="folder" type="text" placeholder="Drive 폴더 URL, 또는 내 PC 폴더 경로 (예: G:\내 드라이브\건축시공기술사)">
     <button id="btnIndex" class="primary">색인 시작</button>
+    <button id="btnExport" title=".env의 EXPORT_DIR(NAS 폴더)로 보기 전용 사이트를 내보냅니다">NAS로 내보내기</button>
   </div>
   <div class="row">
     <div class="bar"><div id="bar"></div></div>
@@ -102,6 +103,7 @@
 </div>
 
 <script>
+const STATIC_MODE = false;   // 내보내기(NAS) 버전에서는 true 로 바뀜 → 서버 없이 브라우저에서 검색
 const KINDS = { "": "전체", figure: "그림", table: "표", flowchart: "플로우차트", chart: "차트",
                 diagram: "다이어그램", photo: "사진", screenshot: "스크린샷" };
 const $ = id => document.getElementById(id);
@@ -125,7 +127,8 @@ $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q
 
 async function search() {
   const my = ++seq;
-  const r = await fetch(`/api/search?q=${encodeURIComponent(state.q)}&kind=${state.kind}`).then(r => r.json());
+  const r = STATIC_MODE ? localSearch(state.q, state.kind)
+    : await fetch(`/api/search?q=${encodeURIComponent(state.q)}&kind=${state.kind}`).then(r => r.json());
   if (my !== seq) return;
   state.results = r.results;
   $("empty").hidden = r.results.length > 0;
@@ -133,7 +136,7 @@ async function search() {
     const first = p.items[0] || {};
     const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("");
     return `<div class="card" data-i="${i}">
-      <img loading="lazy" src="/img/thumbs/${p.page_key}.webp" alt="">
+      <img loading="lazy" src="img/thumbs/${p.page_key}.webp" alt="">
       <div class="meta"><div>${tags}</div>
         <div class="title">${esc(first.title || first.description || "")}</div>
         <div class="file">${esc(p.file_name)} · ${p.page_no}p</div></div></div>`;
@@ -143,7 +146,7 @@ async function search() {
 // 마우스를 올리면 전체 페이지 이미지를 미리 받아둠 → 클릭 시 즉시 표시
 function prefetch(i) {
   const p = state.results[i]; if (!p || prefetched.has(p.page_key)) return;
-  prefetched.add(p.page_key); const im = new Image(); im.src = `/img/pages/${p.page_key}.webp`;
+  prefetched.add(p.page_key); const im = new Image(); im.src = `img/pages/${p.page_key}.webp`;
 }
 $("grid").addEventListener("mouseover", e => { const c = e.target.closest(".card"); if (c) prefetch(+c.dataset.i); });
 $("grid").addEventListener("touchstart", e => { const c = e.target.closest(".card"); if (c) prefetch(+c.dataset.i); }, { passive: true });
@@ -154,11 +157,11 @@ function openViewer(i) {
   state.cur = i;
   const t0 = performance.now();
   const img = $("vimg");
-  img.src = `/img/thumbs/${p.page_key}.webp`;          // 캐시된 썸네일을 먼저 보여주고
+  img.src = `img/thumbs/${p.page_key}.webp`;          // 캐시된 썸네일을 먼저 보여주고
   const full = new Image();
   full.onload = () => { if (state.cur === i) { img.src = full.src;
     $("vtime").textContent = `페이지 표시: ${((performance.now() - t0) / 1000).toFixed(2)}초`; } };
-  full.src = `/img/pages/${p.page_key}.webp`;          // 고해상도로 교체
+  full.src = `img/pages/${p.page_key}.webp`;          // 고해상도로 교체
   $("vtitle").textContent = p.file_name;
   $("vsub").textContent = `${p.path} · ${p.page_no} / ${p.page_count} 페이지`;
   $("vlink").href = p.web_link || "#";
@@ -214,7 +217,35 @@ async function poll() {
   wasRunning = j.running;
   if (j.running) setTimeout(poll, 1500);
 }
-poll().then(search);
+$("btnExport").onclick = async () => {
+  const r = await fetch("/api/export", { method: "POST" });
+  const j = await r.json();
+  alert(r.ok ? `내보내기 완료: ${j.dir}\n페이지 ${j.pages}개` : (j.detail || "실패"));
+};
+
+// ── 보기 전용(NAS) 모드: data.json을 받아 브라우저에서 바로 검색 ──
+let DATA = null;
+function localSearch(q, kind) {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const results = [];
+  for (const p of DATA.pages) {
+    const items = p.items.filter(it => (!kind || it.kind === kind) &&
+      terms.every(t => it.s.includes(t) || p.t.includes(t)));
+    if (items.length) results.push({ ...p, items });
+  }
+  return { results };
+}
+async function initStatic() {
+  DATA = await fetch("data.json", { cache: "no-cache" }).then(r => r.json());
+  $("adminRow").querySelectorAll("input,button").forEach(el => el.remove());
+  document.querySelector(".bar").parentElement.querySelector(".bar").remove();
+  state.byKind = {};
+  DATA.pages.forEach(p => p.items.forEach(it => state.byKind[it.kind] = (state.byKind[it.kind] || 0) + 1));
+  renderChips();
+  $("status").textContent = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
+  search();
+}
+STATIC_MODE ? initStatic() : poll().then(search);
 </script>
 </body>
 </html>
