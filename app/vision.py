@@ -170,7 +170,7 @@ def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list
         return _gemini(client, jpeg, model)
     if r.status_code in (400, 401) and "api key" in r.text.lower().replace("_", " "):
         raise QuotaError(f"gemini API 키 오류: {r.text[:200]}", 401)
-    if r.status_code in (429, 403):
+    if r.status_code in (402, 429, 403):   # 402 = 결제 문제(잔액·카드), 403 = 권한
         raise _quota("gemini", r)
     if r.status_code >= 500:
         raise ServerBusy(f"gemini {r.status_code}")
@@ -235,7 +235,7 @@ def _openai(client: httpx.Client, jpeg: bytes) -> list[dict]:
     }
     r = client.post("https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
-    if r.status_code in (429, 403):
+    if r.status_code in (402, 429, 403):   # 402 = 결제 문제(잔액·카드), 403 = 권한
         raise _quota("openai", r)
     if r.status_code >= 500:
         raise ServerBusy(f"openai {r.status_code}")
@@ -320,8 +320,10 @@ class VisionRouter:
                         self.sleep(wait)
                         continue
                     log.warning("%s 사용 불가 → 다음 제공자로 전환: %s", p, e)
-                    self.last_error = (f"{p}: API 키가 잘못됐어요 (.env 확인)" if e.status == 401 else
-                                       f"{p}: 사용 한도 소진/권한 없음 → 나머지는 다음 색인 때 이어서")
+                    self.last_error = {
+                        401: f"{p}: API 키가 잘못됐어요 (.env 확인)",
+                        402: f"{p}: 결제 확인 필요 (AI Studio → Billing에서 잔액·카드 상태 확인)",
+                    }.get(e.status, f"{p}: 사용 한도 소진/권한 없음 → 나머지는 다음 색인 때 이어서")
                     self.disabled.add(p)
                     break
                 except Blocked as e:

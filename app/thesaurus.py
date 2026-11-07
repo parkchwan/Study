@@ -67,7 +67,7 @@ def norm(s: str) -> str:
 
 def _tokens(text: str):
     for w in re.findall(r"[가-힣A-Za-z][가-힣A-Za-z0-9\-]{1,30}", text or ""):
-        if re.fullmatch(r"[가-힣]+", w):
+        if re.search(r"[가-힣]$", w):          # 한글로 끝나면 조사 떼기 (JSP공법에서 → JSP공법)
             for j in JOSA:
                 if w.endswith(j) and len(w) - len(j) >= 2:
                     w = w[: -len(j)]

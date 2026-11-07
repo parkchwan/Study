@@ -477,3 +477,46 @@ def test_stop_when_ai_quota_exhausted(env, monkeypatch):
     job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
     st = job.status()
     assert "중단" in st["phase"] and st["done"] == 1          # 첫 파일에서 한도 확인 후 나머지는 건드리지 않음
+
+
+def test_thesaurus_and_embeddings_build_for_existing_index(env, monkeypatch):
+    """이미 색인된 자료에도 동의어 사전·의미 벡터가 만들어지고 NAS로 내보내지는지."""
+    import json
+    tmp, db, job, settings = env
+    from app import thesaurus, embed
+    from app.export import export_site
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    job.index_local_file({"file_id": "T", "name": "t.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, pdf, None)
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    asked = []
+    def fake_ask(client, model, terms):
+        asked.extend(terms)
+        return [{"term": t, "synonyms": ["매출액", "sales"] if "revenue" in t.lower() else []} for t in terms]
+    monkeypatch.setattr(thesaurus, "_ask_gemini", fake_ask)
+    monkeypatch.setattr(embed, "embed_texts", lambda c, texts, task: [[1.0] + [0.0] * (embed.DIM - 1) for _ in texts])
+    assert thesaurus.build(db) > 0 and any("revenue" in t.lower() for t in asked)
+    assert thesaurus.build(db) == 0                       # 두 번째엔 새 용어 없음 → AI 안 부름
+    assert embed.build(db) == 2 and embed.build(db) == 0  # 바뀐 페이지만 다시 계산
+    out = tmp / "web"; export_site(db, out)
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    thes = json.loads((out / "thesaurus.json").read_text(encoding="utf-8"))
+    assert data["meta"]["embed"]["dim"] == embed.DIM and "key" not in json.dumps(data["meta"]).lower()
+    assert (out / "embeddings.bin").stat().st_size == embed.DIM * len(data["pages"])
+    assert any("sales" in g for g in thes) and ["JSP", "jumbo special pile", "점보 스페셜 파일", "점보스페셜파일"] in thes
+
+
+def test_norm_and_terms():
+    from app import thesaurus
+    assert thesaurus.norm("타설 속도") == thesaurus.norm("타설속도") == "타설속도"
+    assert list(thesaurus._tokens("콘크리트의 타설속도는 JSP공법에서")) == ["콘크리트", "타설속도", "JSP공법"]
+
+
+def test_payment_required_stops_ai(env, monkeypatch):
+    import httpx
+    tmp, db, job, settings = env
+    from app import vision
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    r = vision.VisionRouter(db)
+    r.client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(402, json={"error": {}})))
+    assert r.describe(b"p") is None and "gemini" in r.disabled and "결제" in r.last_error

@@ -85,6 +85,7 @@ class IndexJob:
                 self._maybe_export(st)
             st["ai_calls"] = dict(router.calls)
             st["ai_error"] = router.last_error
+            self._build_search_aids(st, router)
             if settings.export_dir:            # NAS 보기 전용 사이트 자동 갱신
                 st["phase"] = "NAS로 내보내는 중"
                 from .export import export_site
@@ -101,6 +102,21 @@ class IndexJob:
         finally:
             st["running"] = False
             st["finished"] = time.time()
+
+    def _build_search_aids(self, st: dict, router: VisionRouter) -> None:
+        """동의어 사전 + 의미 검색 준비 (새로 생긴 용어·바뀐 페이지만, 글자만 보내므로 저렴)."""
+        if not router.configured or router.disabled:
+            return
+        from . import embed, thesaurus
+        try:
+            st["phase"] = "동의어 사전 만드는 중"
+            thesaurus.build(self.db, router.gemini_model,
+                            progress=lambda d, t: st.update(phase=f"동의어 사전 만드는 중 {d}/{t}"))
+            st["phase"] = "의미 검색 준비 중"
+            embed.build(self.db, progress=lambda d, t: st.update(phase=f"의미 검색 준비 중 {d}/{t}쪽"))
+        except Exception as e:
+            log.warning("검색 보조 자료 만들기 실패: %s", e)
+            st["errors"].append(f"동의어/의미 검색 준비 실패: {e}")
 
     def _maybe_export(self, st: dict, every_sec: int = 600) -> None:
         """며칠씩 걸리는 색인 중에도 태블릿에서 볼 수 있게 10분마다 NAS로 중간 내보내기."""

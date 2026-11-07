@@ -43,6 +43,10 @@ class Settings:
     handwriting: bool = field(default_factory=lambda: os.getenv("HANDWRITING", "on").lower() in ("on", "1", "true", "yes"))
     handwriting_image_px: int = field(default_factory=lambda: _int("HANDWRITING_IMAGE_PX", 1280))
 
+    # 의미 검색 (뜻이 비슷한 페이지 찾기): on/off, 임베딩 모델
+    semantic: bool = field(default_factory=lambda: os.getenv("SEMANTIC_SEARCH", "on").lower() in ("on", "1", "true", "yes"))
+    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "gemini-embedding-001"))
+
     @property
     def ai_image_px(self) -> int:
         return max(self.vision_image_px, self.handwriting_image_px) if self.handwriting else self.vision_image_px

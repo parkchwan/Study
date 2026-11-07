@@ -42,6 +42,8 @@
   .card .meta { padding: 8px 10px; font-size: 13px; display: grid; gap: 3px; }
   .card .file { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card .title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tag.sem { background: transparent; border: 1px dashed var(--accent); }
+  #keybar button { padding: 3px 10px; font-size: 13px; }
   .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--accent-soft);
          color: var(--accent); margin-right: 4px; }
   .empty { text-align: center; color: var(--muted); padding: 60px 16px; }
@@ -81,6 +83,7 @@
     <input id="q" type="text" placeholder="검색: 예) 공정 순서도, 표 3, 필기한 단어(피복두께)">
   </div>
   <div class="chips" id="chips"></div>
+  <div class="status" id="keybar" hidden></div>
 </header>
 <main>
   <div class="status" id="count" style="margin:0 0 10px"></div>
@@ -131,7 +134,8 @@ const PAGE_CHUNK = 120;          // 결과 카드는 120개씩 나눠 그림 →
 const imgUrl = (dir, p) => `img/${dir}/${p.page_key}.webp?v=${p.v || ""}`;
 function cardHtml(p, i) {
   const first = p.items[0] || {};
-  const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("");
+  const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("")
+    + (p._sem ? `<span class="tag sem" title="단어는 다르지만 뜻이 비슷한 결과">뜻 비슷</span>` : "");
   return `<div class="card" data-i="${i}">
     <img loading="lazy" src="${imgUrl("thumbs", p)}" alt="">
     <div class="meta"><div>${tags}</div>
@@ -146,17 +150,27 @@ function renderMore() {
   $("more").hidden = shown >= state.results.length;
   $("more").textContent = `더 보기 (${state.results.length - shown}개 남음)`;
 }
-async function search() {
+function search() {
   const my = ++seq;
-  const r = STATIC_MODE ? localSearch(state.q, state.kind)
-    : await fetch(`/api/search?q=${encodeURIComponent(state.q)}&kind=${state.kind}`).then(r => r.json());
-  if (my !== seq) return;
-  state.results = r.results;
-  $("empty").hidden = r.results.length > 0;
-  $("count").textContent = r.results.length ? `결과 ${r.results.length}쪽` : "";
+  if (!DATA) return;
+  showResults(rank(state.q, state.kind, null));          // 1) 글자·동의어 검색 → 즉시 표시
+  clearTimeout(semTimer);
+  if (!state.q || !EMB) return;
+  semTimer = setTimeout(async () => {                     // 2) 입력이 멈추면 의미 검색을 더해 다시 정렬
+    const qv = await queryVector(state.q);
+    if (qv && my === seq) showResults(rank(state.q, state.kind, qv));
+  }, 500);
+}
+function showResults(results) {
+  state.results = results;
+  $("empty").hidden = results.length > 0;
+  const sem = results.filter(p => p._sem).length;
+  $("count").textContent = results.length ? `결과 ${results.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}` : "";
   $("grid").innerHTML = ""; shown = 0;
   renderMore();
 }
+let semTimer;
+
 // 스크롤이 끝에 가까워지면 자동으로 다음 묶음을 그림
 new IntersectionObserver(es => { if (es[0].isIntersecting && shown < state.results.length) renderMore(); },
                          { rootMargin: "800px" }).observe($("more"));
@@ -217,7 +231,7 @@ $("folder").addEventListener("input", () => { folderTouched = true; });
 async function poll() {
   const s = await fetch("/api/status").then(r => r.json());
   const j = s.job, st = s.stats;
-  state.byKind = st.by_kind || {}; renderChips();
+  if (!DATA) { state.byKind = st.by_kind || {}; renderChips(); }
   // 마지막으로 색인한 폴더 → 없으면 기본 폴더(.env의 DEFAULT_FOLDER). 칸에서 자유롭게 바꿀 수 있음
   if (!$("folder").value && !folderTouched) $("folder").value = s.folder_id || s.default_folder || "";
   const ai = s.gemini || s.openai ? `AI: ${s.vision_provider} (Gemini ${s.gemini ? "✓" : "✗"} / OpenAI ${s.openai ? "✓" : "✗"})` : "AI 키 없음 → 로컬 분석만";
@@ -239,8 +253,8 @@ async function poll() {
   $("status").textContent = msg;
   // 진행 중에도 결과가 채워지도록 가끔 새로 고침 — 단, 보고 있는 화면(스크롤·뷰어)은 건드리지 않음
   const changed = st.items !== lastItems, idle = window.scrollY < 300 && state.cur < 0;
-  if ((j.running && changed && idle && Date.now() - lastRefresh > 10000) || (wasRunning && !j.running)) {
-    lastItems = st.items; lastRefresh = Date.now(); search();
+  if ((j.running && changed && idle && Date.now() - lastRefresh > 20000) || (wasRunning && !j.running)) {
+    lastItems = st.items; lastRefresh = Date.now(); loadAll();
   }
   wasRunning = j.running;
   if (j.running) setTimeout(poll, 1500);
@@ -251,30 +265,21 @@ $("btnExport").onclick = async () => {
   alert(r.ok ? `내보내기 완료: ${j.dir}\n페이지 ${j.pages}개` : (j.detail || "실패"));
 };
 
-// ── 보기 전용(NAS) 모드: data.json을 받아 브라우저에서 바로 검색 ──
-let DATA = null, TEXT = {};
-function localSearch(q, kind) {
-  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const results = [];
-  for (const p of DATA.pages) {
-    const items = p.items.filter(it => (!kind || it.kind === kind) &&
-      terms.every(t => it.s.includes(t) || (TEXT[p.page_key] || "").includes(t)));
-    if (items.length) results.push({ ...p, items });
-  }
-  return { results };
-}
-// 압축된 data.json(v2)을 화면에서 쓰는 모양으로 풀기
+// ── 검색 엔진 (PC·태블릿 공용) ─────────────────────────────────────────────
+// 1) 띄어쓰기·기호 무시  2) 동의어 사전(약어·영어·외래어)  3) 일부 단어만 맞아도 관련도 순
+// 4) 의미 검색: 단어가 달라도 뜻이 비슷하면 찾음 (Gemini 임베딩)
+let DATA = null, TEXT = {}, THES = new Map(), EMB = null, EMB_DIM = 0;
+const norm = s => String(s || "").toLowerCase().replace(/[\s\-_·.,\/()\[\]{}:;'"!?~]+/g, "");
+
 function expandData(raw) {
-  if (!raw.files) return raw;      // 예전 형식
+  if (!raw.files) return raw;
   const pages = raw.pages.map(([k, fi, n, its]) => {
     const [name, path, link, count, v] = raw.files[fi];
     return { page_key: k, file_name: name, path, web_link: link, page_count: count, page_no: n, v,
-             items: its.map(([kind, title, d, src]) => ({ kind, title, description: d, keywords: "", source: src,
-                                                         s: (kind + " " + title + " " + d).toLowerCase() })) };
+             items: its.map(([kind, title, d, src]) => ({ kind, title, description: d, keywords: "", source: src })) };
   });
   return { meta: raw.meta, pages };
 }
-// text.json 도착 후: 본문 글자·손글씨 전문·키워드를 채워 넣음
 function mergeText(T) {
   for (const p of DATA.pages) {
     const e = T[p.page_key]; if (!e) continue;
@@ -284,28 +289,158 @@ function mergeText(T) {
       const [desc, kw] = details[i] || [];
       if (desc) it.description = desc;
       if (kw) it.keywords = kw;
-      it.s = [it.kind, it.title, it.description, it.keywords].join(" ").toLowerCase();
     });
   }
 }
-async function initStatic() {
-  DATA = expandData(await fetch("data.json", { cache: "no-cache" }).then(r => r.json()));
-  $("adminRow").querySelectorAll("input,button").forEach(el => el.remove());
-  document.querySelector(".bar").parentElement.querySelector(".bar").remove();
+function buildThes(groups) {
+  THES = new Map();
+  for (const g of groups) {
+    const alts = [...new Set(g.map(norm).filter(Boolean))];
+    for (const a of alts) {
+      const cur = THES.get(a) || new Set();
+      alts.forEach(x => cur.add(x)); THES.set(a, cur);
+    }
+  }
+}
+function prepare() {       // 페이지마다 검색용 글을 미리 만들어 둠
+  for (const p of DATA.pages) {
+    const head = p.items.map(it => `${it.title} ${it.keywords}`).join(" ");
+    const all = `${p.file_name} ${head} ${p.items.map(it => `${KINDS[it.kind] || ""} ${it.description}`).join(" ")} ${TEXT[p.page_key] || ""}`;
+    p.hayN = norm(all); p.hayS = all.toLowerCase(); p.headN = norm(head);
+  }
+}
+// 검색어를 '단위'로 나눔: 동의어 사전에 있는 말은 최대한 길게 묶고(예: 타설속도), 나머지는 그대로
+function parseQuery(q) {
+  const toks = q.toLowerCase().split(/\s+/).filter(Boolean), units = [];
+  const unit = t => ({ text: t, alts: THES.has(t) ? [...THES.get(t)] : [t] });
+  for (let i = 0; i < toks.length;) {
+    let took = 0;
+    for (let L = Math.min(5, toks.length - i); L >= 2; L--) {           // 여러 단어 묶음 (jumbo special pile)
+      const c = norm(toks.slice(i, i + L).join(""));
+      if (THES.has(c)) { units.push(unit(c)); took = L; break; }
+    }
+    if (took) { i += took; continue; }
+    const t = norm(toks[i]); let buf = "";
+    for (let pos = 0; pos < t.length;) {                                // 붙여 쓴 말 나누기 (타설적정속도)
+      let L = 0;
+      for (let l = Math.min(20, t.length - pos); l >= 2; l--) if (THES.has(t.substr(pos, l))) { L = l; break; }
+      if (L) {
+        if (buf) { units.push(unit(buf)); buf = ""; }
+        units.push(unit(t.substr(pos, L))); pos += L;
+      } else { buf += t[pos]; pos++; }
+    }
+    if (buf) units.push(unit(buf));
+    i++;
+  }
+  return units.filter(u => u.text);
+}
+const reCache = new Map();
+function has(p, alt) {
+  if (/^[a-z0-9]{1,4}$/.test(alt)) {        // 짧은 영문 약어는 단어 단위로 (rate가 separate에 걸리지 않게)
+    let re = reCache.get(alt);
+    if (!re) { re = new RegExp(`(^|[^a-z0-9])${alt}([^a-z0-9]|$)`); reCache.set(alt, re); }
+    return re.test(p.hayS);
+  }
+  return p.hayN.includes(alt);
+}
+function rank(q, kind, qv) {
+  let pages = DATA.pages;
+  if (kind) pages = pages.filter(p => p.items.some(it => it.kind === kind));
+  const view = p => kind ? { ...p, items: p.items.filter(it => it.kind === kind) } : p;
+  if (!q) return pages.map(view);
+  const units = parseQuery(q);
+  if (!units.length) return pages.map(view);
+  // 1) 단위마다 어느 페이지에 있는지 (2=입력 그대로, 1=동의어)
+  const hits = pages.map(p => units.map(u => has(p, u.text) ? 2 : (u.alts.some(a => a !== u.text && has(p, a)) ? 1 : 0)));
+  const N = pages.length;
+  const w = units.map((u, k) => Math.log(1 + N / (1 + hits.reduce((n, h) => n + (h[k] ? 1 : 0), 0))));
+  const W = w.reduce((a, b) => a + b, 0) || 1;
+  // 2) 의미 유사도
+  let sims = null, simCut = 1;
+  if (qv && EMB) {
+    const idx = new Map(DATA.pages.map((p, i) => [p.page_key, i]));
+    sims = pages.map(p => { const o = idx.get(p.page_key) * EMB_DIM; let d = 0;
+      for (let j = 0; j < EMB_DIM; j++) d += EMB[o + j] * qv[j]; return d / 127; });
+    const sorted = [...sims].sort((a, b) => b - a);
+    simCut = Math.max(0.5, (sorted[0] || 0) - 0.15, sorted[Math.min(59, sorted.length - 1)] || 0);
+  }
+  const out = [];
+  pages.forEach((p, i) => {
+    const h = hits[i];
+    const cov = h.reduce((a, x, k) => a + (x ? w[k] * (x === 2 ? 1 : 0.85) : 0), 0) / W;
+    const sim = sims ? sims[i] : 0;
+    const lexOk = units.length === 1 ? h[0] > 0 : cov >= 0.5;
+    if (lexOk) {
+      const headBonus = units.some(u => p.headN.includes(u.text)) ? 0.1 : 0;
+      out.push({ ...view(p), _score: cov + headBonus + 0.4 * Math.max(0, sim), _i: i });
+    } else if (sims && sim >= simCut) {
+      out.push({ ...view(p), _score: 0.5 * sim, _sem: true, _i: i });
+    }
+  });
+  return out.sort((a, b) => b._score - a._score || a._i - b._i);
+}
+// 의미 검색용 검색어 벡터: PC는 서버가, 태블릿은 그 기기에 저장한 키로 Gemini에 직접 요청
+const qvCache = new Map();
+async function queryVector(q) {
+  if (qvCache.has(q)) return qvCache.get(q);
+  const m = DATA.meta.embed; let v = null;
+  try {
+    if (m.query) {
+      const r = await fetch(`${m.query}?q=${encodeURIComponent(q)}`); if (r.ok) v = (await r.json()).v;
+    } else {
+      const key = getKey(); if (!key) return null;
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m.model}:embedContent`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ content: { parts: [{ text: q }] }, taskType: "RETRIEVAL_QUERY", outputDimensionality: m.dim }) });
+      if (r.ok) { const vals = (await r.json()).embedding.values; const n = Math.hypot(...vals) || 1; v = vals.map(x => x / n); }
+      else if (r.status === 400 || r.status === 403) { keyBar("키가 맞지 않아요. 다시 입력해 주세요."); }
+    }
+  } catch (e) { v = null; }
+  if (v) qvCache.set(q, v);
+  return v;
+}
+function getKey() { try { return localStorage.getItem("gemini_key") || ""; } catch (e) { return ""; } }
+function keyBar(msg) {      // 태블릿: 의미 검색용 키를 이 기기에만 저장 (NAS 파일에는 키가 없음)
+  if (!STATIC_MODE || !DATA || !DATA.meta.embed) return;
+  const key = getKey(), bar = $("keybar"); bar.hidden = false;
+  bar.innerHTML = key && !msg
+    ? `🧠 의미 검색 켜짐 <button id="keyBtn">키 바꾸기</button>`
+    : `🔑 ${msg || "뜻으로 찾는 검색을 켜려면 Gemini API 키를 한 번 입력해 주세요 (이 기기에만 저장)."} <button id="keyBtn">키 입력</button>`;
+  $("keyBtn").onclick = () => {
+    const k = prompt("Gemini API 키 (AIza… 또는 AQ.…). 이 태블릿 브라우저에만 저장됩니다.", "");
+    if (k === null) return;
+    try { k.trim() ? localStorage.setItem("gemini_key", k.trim()) : localStorage.removeItem("gemini_key"); } catch (e) {}
+    qvCache.clear(); keyBar(); search();
+  };
+}
+function countKinds() {
   state.byKind = {};
   DATA.pages.forEach(p => p.items.forEach(it => state.byKind[it.kind] = (state.byKind[it.kind] || 0) + 1));
   renderChips();
-  const head = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
-  $("status").textContent = head + " · 본문 검색 준비 중…";
-  search();
-  // 본문(OCR) 글자는 화면을 먼저 띄운 뒤 받아 옴
-  try {
-    mergeText(await fetch(DATA.meta.text || "text.json").then(r => r.json()));
-    $("status").textContent = head;
-    if (state.q) search();
-  } catch (e) { $("status").textContent = head + " · 본문 검색 불가(그림 설명만 검색)"; }
 }
-STATIC_MODE ? initStatic() : poll().then(search);
+let loading = false;
+async function loadAll() {
+  if (loading) return; loading = true;
+  try {
+    DATA = expandData(await fetch(STATIC_MODE ? "data.json" : "/api/data", { cache: "no-cache" }).then(r => r.json()));
+    TEXT = {}; prepare(); countKinds();
+    const head = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
+    if (STATIC_MODE) $("status").textContent = head + " · 검색 준비 중…";
+    search();
+    const m = DATA.meta, jobs = [fetch(m.text || "text.json").then(r => r.json()).then(mergeText)];
+    if (m.thesaurus) jobs.push(fetch(m.thesaurus).then(r => r.json()).then(buildThes));
+    if (m.embed) jobs.push(fetch(m.embed.file).then(r => r.arrayBuffer()).then(b => { EMB = new Int8Array(b); EMB_DIM = m.embed.dim; }));
+    else EMB = null;
+    const res = await Promise.allSettled(jobs);
+    prepare(); search(); keyBar();
+    if (STATIC_MODE) $("status").textContent = head + (res[0].status === "rejected" ? " · 본문 검색 불가(그림 설명만 검색)" : "");
+  } finally { loading = false; }
+}
+if (STATIC_MODE) {
+  $("adminRow").querySelectorAll("input,button").forEach(el => el.remove());
+  document.querySelector(".bar").remove();
+} else poll();
+loadAll();
 </script>
 </body>
 </html>

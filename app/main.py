@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from .config import settings
 from .db import DB, img_version
 from .drive import LocalFolder, local_dir, parse_folder_id
-from .export import export_site
+from .export import build_payload, export_site
 from .indexer import IndexJob
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -91,6 +91,63 @@ def search(q: str = "", kind: str = "", limit: int = 3000, offset: int = 0):
             "v": img_version(r["version_key"]), "items": []})
         p["items"].append({k: r[k] for k in ("kind", "title", "description", "keywords", "source")})
     return {"results": list(pages.values())}
+
+
+# ── 화면용 데이터 (NAS 내보내기와 같은 형식 → 같은 검색 엔진을 PC/태블릿에서 공용) ──
+_payload: dict = {"key": None}
+
+
+def _cached_payload():
+    from . import embed
+    st = db.stats()
+    key = (st["pages"], st["items"], len(db.thesaurus_terms()), len(db.embedding_sigs()))
+    if _payload["key"] != key:
+        data, texts, thes = build_payload(db)
+        data["meta"].update({"text": "/api/text", "thesaurus": "/api/thesaurus"})
+        blob = db.embedding_blob([p[0] for p in data["pages"]], embed.DIM)
+        if any(blob):
+            data["meta"]["embed"] = {"file": "/api/embeddings", "dim": embed.DIM, "model": settings.embed_model,
+                                     "query": "/api/qvec"}
+        _payload.update(key=key, data=data, texts=texts, thes=thes, blob=blob)
+    return _payload
+
+
+@app.get("/api/data")
+def api_data():
+    return _cached_payload()["data"]
+
+
+@app.get("/api/text")
+def api_text():
+    return _cached_payload()["texts"]
+
+
+@app.get("/api/thesaurus")
+def api_thesaurus():
+    return _cached_payload()["thes"]
+
+
+@app.get("/api/embeddings")
+def api_embeddings():
+    from fastapi import Response
+    return Response(_cached_payload()["blob"], media_type="application/octet-stream")
+
+
+@app.get("/api/qvec")
+def api_qvec(q: str):
+    """PC 화면용: 검색어를 의미 벡터로 (키는 PC의 .env에 있음)."""
+    from . import embed
+    if not embed.enabled():
+        raise HTTPException(400, "의미 검색 꺼짐 (Gemini 키 없음)")
+    q = q.strip()[:500]
+    if q not in _qcache:
+        if len(_qcache) > 500:
+            _qcache.clear()
+        _qcache[q] = embed.query_vector(q)
+    return {"v": _qcache[q]}
+
+
+_qcache: dict[str, list[float]] = {}
 
 
 @app.get("/api/page/{page_key}")

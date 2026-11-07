@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS vision_cache (
     result_json  TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS embeddings (
+    page_key     TEXT PRIMARY KEY,
+    sig          TEXT,               -- 임베딩한 글의 해시: 내용이 바뀔 때만 다시 계산
+    vec          BLOB                -- int8 벡터
+);
 CREATE TABLE IF NOT EXISTS thesaurus (
     term         TEXT PRIMARY KEY,   -- 정규화된 용어
     variants     TEXT                -- JSON 배열: [원래 표기, 동의어...]
@@ -205,8 +210,8 @@ class DB:
             "SELECT kind, title, description, keywords, source FROM items WHERE page_key=? ORDER BY id", (page_key,))]
         return d
 
-    def export_pages(self) -> list[dict]:
-        """정적 사이트용: 페이지별 항목 + 검색 텍스트."""
+    def export_pages(self, with_text: bool = False) -> list[dict]:
+        """정적 사이트용: 페이지별 항목 + 검색 텍스트. with_text면 원문 본문(text)도 포함."""
         out: dict[str, dict] = {}
         rows = self.conn.execute(
             "SELECT p.page_key, p.page_no, p.width, p.height, p.text, f.name AS file_name, f.path, f.web_link,"
@@ -218,6 +223,8 @@ class DB:
                 "page_count": r["page_count"], "v": img_version(r["version_key"]),
                 "t": " ".join(x for x in (r["file_name"], r["path"], (r["text"] or "")[:1000]) if x).lower(),
                 "items": []}
+            if with_text:
+                out[r["page_key"]]["text"] = r["text"] or ""
         for r in self.conn.execute("SELECT page_key, kind, title, description, keywords, source FROM items ORDER BY id"):
             p = out.get(r["page_key"])
             if p is None:
@@ -226,6 +233,20 @@ class DB:
             it["s"] = " ".join(str(v) for v in (r["kind"], r["title"], r["description"], r["keywords"]) if v).lower()
             p["items"].append(it)
         return [p for p in out.values() if p["items"]]
+
+    # ── 의미 검색 임베딩 ──
+    def embedding_sigs(self) -> dict[str, str]:
+        return {r["page_key"]: r["sig"] for r in self.conn.execute("SELECT page_key, sig FROM embeddings")}
+
+    def embedding_save(self, rows: list[tuple[str, str, bytes]]) -> None:
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO embeddings(page_key, sig, vec) VALUES(?,?,?)", rows)
+
+    def embedding_blob(self, keys: list[str], dim: int) -> bytes:
+        """keys 순서대로 이어 붙인 int8 벡터 (없는 페이지는 0)."""
+        vecs = {r["page_key"]: r["vec"] for r in self.conn.execute("SELECT page_key, vec FROM embeddings")}
+        zero = bytes(dim)
+        return b"".join(v if (v := vecs.get(k)) and len(v) == dim else zero for k in keys)
 
     # ── 동의어 사전 ──
     def thesaurus_terms(self) -> set[str]:

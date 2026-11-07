@@ -65,11 +65,19 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
 def export_site(db: DB, out_dir: Path) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    from . import embed
     data, texts, thes = build_payload(db)
     pages = [{"page_key": p[0]} for p in data["pages"]]
     stamp = time.strftime("%Y%m%d%H%M%S")
     data["meta"]["text"] = f"text.json?{stamp}"
     data["meta"]["thesaurus"] = f"thesaurus.json?{stamp}"
+    blob = db.embedding_blob([p["page_key"] for p in pages], embed.DIM)
+    if any(blob):
+        # 페이지 순서대로 이어 붙인 의미 벡터. API 키는 넣지 않음 (태블릿에서 직접 입력)
+        data["meta"]["embed"] = {"file": f"embeddings.bin?{stamp}", "dim": embed.DIM, "model": settings.embed_model}
+        b = out_dir / "embeddings.bin.tmp"
+        b.write_bytes(blob)
+        b.replace(out_dir / "embeddings.bin")
     dump = lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":"))
     for name, obj in (("text.json", texts), ("thesaurus.json", thes)):
         t = out_dir / (name + ".tmp")
