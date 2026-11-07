@@ -155,3 +155,32 @@ def test_static_export(env):
     assert "const STATIC_MODE = true;" in (out / "index.html").read_text(encoding="utf-8")
     db.delete_file("E"); export_site(db, out)      # 삭제된 페이지 이미지는 NAS에서도 정리
     assert not (out / "img" / "pages" / "E_2.webp").exists()
+
+
+def test_handwriting(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import extract, vision
+    # 펜 필기(Ink annotation)가 있는 텍스트 페이지 → 시각요소로 감지되어야 함
+    doc = fitz.open(); p = doc.new_page(); p.insert_text((72, 72), "printed body")
+    p.add_ink_annot([[(100, 100), (150, 130), (200, 110), (250, 160)]])
+    t = p.add_text_annot((300, 300), "메모: 피복두께 확인"); doc.save(tmp / "ink.pdf")
+    pages = extract.analyze(tmp / "ink.pdf")
+    assert pages[0].n_ink == 1 and pages[0].has_visual
+    assert "피복두께" in pages[0].text                   # 메모 주석은 무료로 검색
+    assert any(i["kind"] == "handwriting" for i in pages[0].local_items())
+
+    # AI 응답의 handwriting 항목이 검색되는지 (라우터를 가짜로)
+    monkeypatch.setattr(settings, "handwriting", True)
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    seen = {}
+    def gem(c, j):
+        seen["prompt"] = vision.prompt()
+        return [{"kind": "handwriting", "title": "철근 필기", "description": "철근 콘크리트 피복두께 40mm 이상", "keywords": []}]
+    monkeypatch.setattr(vision, "_gemini", gem)
+    job.index_local_file({"file_id": "H", "name": "note.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, tmp / "ink.pdf", vision.VisionRouter(db))
+    assert "손글씨" in seen["prompt"]
+    r = db.search("40mm")
+    assert r and r[0]["kind"] == "handwriting"
+    monkeypatch.setattr(settings, "handwriting", False)
+    assert "손글씨" not in vision.prompt() and vision.prompt_version() != "v2-hw"

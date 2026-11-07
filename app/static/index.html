@@ -54,7 +54,7 @@
   .side { background: var(--panel); overflow: auto; padding: 16px; display: grid; gap: 12px; align-content: start; }
   .side h2 { font-size: 16px; margin: 0; word-break: break-all; }
   .item { border-top: 1px solid var(--line); padding-top: 10px; font-size: 14px; }
-  .item .desc { color: var(--muted); margin-top: 4px; }
+  .item .desc { color: var(--muted); margin-top: 4px; white-space: pre-wrap; }
   .kw { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .nav { display: flex; gap: 6px; flex-wrap: wrap; }
   .timing { font-size: 12px; color: var(--muted); }
@@ -78,7 +78,7 @@
     <span class="status" id="status">불러오는 중…</span>
   </div>
   <div class="row">
-    <input id="q" type="text" placeholder="검색: 예) 매출 차트, 공정 순서도, 표 3">
+    <input id="q" type="text" placeholder="검색: 예) 공정 순서도, 표 3, 필기한 단어(피복두께)">
   </div>
   <div class="chips" id="chips"></div>
 </header>
@@ -105,7 +105,7 @@
 <script>
 const STATIC_MODE = false;   // 내보내기(NAS) 버전에서는 true 로 바뀜 → 서버 없이 브라우저에서 검색
 const KINDS = { "": "전체", figure: "그림", table: "표", flowchart: "플로우차트", chart: "차트",
-                diagram: "다이어그램", photo: "사진", screenshot: "스크린샷" };
+                diagram: "다이어그램", photo: "사진", screenshot: "스크린샷", handwriting: "필기" };
 const $ = id => document.getElementById(id);
 let state = { q: "", kind: "", results: [], cur: -1, byKind: {} };
 const prefetched = new Set();

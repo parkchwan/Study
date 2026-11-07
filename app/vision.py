@@ -3,7 +3,7 @@
 크레딧 절약 장치
  1. 로컬 분석으로 시각 요소가 있는 페이지만 호출 (extract.PageInfo.has_visual)
  2. 이미지 해시 캐시: 같은 그림/재색인 시 재호출 안 함
- 3. 이미지를 768px JPEG로 축소해 전송 (토큰 감소)
+ 3. 이미지를 768px JPEG로 축소해 전송 (필기 인식 켜면 1280px — 작은 글씨 판독용)
  4. JSON 강제 + 짧은 출력 (maxOutputTokens 제한)
  5. VISION_MAX_CALLS 로 1회 인덱싱 당 호출 상한
 """
@@ -20,9 +20,8 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v1"
-KINDS = ["figure", "table", "flowchart", "chart", "diagram", "photo", "screenshot"]
-PROMPT = (
+KINDS = ["figure", "table", "flowchart", "chart", "diagram", "photo", "screenshot", "handwriting"]
+BASE_PROMPT = (
     "이 문서 페이지 이미지에 있는 시각 요소(그림, 표, 플로우차트, 차트, 다이어그램, 사진, 스크린샷)를 모두 찾아라. "
     "본문 텍스트만 있는 영역은 무시. 각 요소마다 kind는 "
     + "|".join(KINDS)
@@ -30,6 +29,24 @@ PROMPT = (
     "description은 검색에 유용한 1~2문장 한국어 설명, keywords는 한국어/영어 검색어 3~8개. "
     'JSON만 출력: {"items":[{"kind":"","title":"","description":"","keywords":[]}]}. 요소가 없으면 {"items":[]}.'
 )
+HANDWRITING_PROMPT = (
+    BASE_PROMPT
+    + " 추가로, 페이지에 손글씨(펜 필기, 메모, 밑줄 옆 주석 등)가 있으면 kind를 handwriting으로 하는 항목을 하나 더 넣고, "
+    "title은 필기 주제 요약(10단어 이하), description에는 손글씨 내용을 읽은 그대로 받아 적어라(인쇄된 글자는 제외, "
+    "최대 1500자, 못 읽는 글자는 ?로). 손글씨가 없으면 handwriting 항목을 넣지 마라."
+)
+
+
+def prompt() -> str:
+    return HANDWRITING_PROMPT if settings.handwriting else BASE_PROMPT
+
+
+def prompt_version() -> str:
+    return "v2-hw" if settings.handwriting else "v1"
+
+
+def max_tokens() -> int:
+    return 2500 if settings.handwriting else 800
 
 
 class QuotaError(Exception):
@@ -48,7 +65,7 @@ def _parse(text: str) -> list[dict]:
         items.append({
             "kind": kind if kind in KINDS else "figure",
             "title": str(it.get("title", ""))[:200],
-            "description": str(it.get("description", ""))[:600],
+            "description": str(it.get("description", ""))[:2000 if kind == "handwriting" else 600],
             "keywords": [str(k) for k in it.get("keywords", [])][:10],
         })
     return items
@@ -59,9 +76,10 @@ def _gemini(client: httpx.Client, jpeg: bytes) -> list[dict]:
     body = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
-            {"text": PROMPT},
+            {"text": prompt()},
         ]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": 800},
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1,
+                             "maxOutputTokens": max_tokens()},
     }
     r = client.post(url, params={"key": settings.gemini_api_key}, json=body)
     if r.status_code in (429, 403):
@@ -75,12 +93,14 @@ def _openai(client: httpx.Client, jpeg: bytes) -> list[dict]:
     body = {
         "model": settings.openai_model,
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": PROMPT},
+            {"type": "text", "text": prompt()},
             {"type": "image_url", "image_url": {
-                "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "detail": "low"}},
+                "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(),
+                # 손글씨는 저해상도(low)로는 읽기 어려움 → 필기 인식 시에만 high
+                "detail": "high" if settings.handwriting else "low"}},
         ]}],
         "response_format": {"type": "json_object"},
-        "max_completion_tokens": 800,
+        "max_completion_tokens": max_tokens(),
     }
     r = client.post("https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
@@ -113,7 +133,7 @@ class VisionRouter:
 
     def describe(self, jpeg: bytes) -> tuple[list[dict], str] | None:
         """(항목 목록, 사용한 제공자) 반환. AI를 못 쓰면 None."""
-        h = hashlib.sha256(jpeg + PROMPT_VERSION.encode()).hexdigest()
+        h = hashlib.sha256(jpeg + prompt_version().encode()).hexdigest()
         cached = self.db.cache_get(h)
         if cached is not None:
             self.calls["cache"] += 1

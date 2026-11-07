@@ -40,12 +40,14 @@ class PageInfo:
     n_images: int = 0               # 의미 있는 크기의 비트맵 수
     n_drawings: int = 0             # 벡터 도형 수 (플로우차트/차트 단서)
     n_tables: int = 0
+    n_ink: int = 0                  # 펜 필기 주석(Ink annotation) 수 — 태블릿 필기 PDF
     is_image_file: bool = False
     captions: list[dict] = field(default_factory=list)
 
     @property
     def has_visual(self) -> bool:
-        return self.is_image_file or self.n_images > 0 or self.n_tables > 0 or self.n_drawings >= 15 or bool(self.captions)
+        return (self.is_image_file or self.n_images > 0 or self.n_tables > 0 or self.n_drawings >= 15
+                or self.n_ink > 0 or bool(self.captions))
 
     def local_items(self) -> list[dict]:
         """AI 없이 만들 수 있는 색인 항목."""
@@ -55,6 +57,9 @@ class PageInfo:
             items.append({"kind": "table", "title": "", "description": f"표 {self.n_tables}개 감지", "source": "local"})
         if (self.n_images or self.is_image_file) and not kinds & {"figure", "chart", "flowchart", "diagram"}:
             items.append({"kind": "figure", "title": "", "description": "그림 감지", "source": "local"})
+        if self.n_ink:
+            items.append({"kind": "handwriting", "title": "", "description": f"펜 필기 {self.n_ink}개 감지 (내용 검색은 AI 필요)",
+                          "source": "local"})
         if self.n_drawings >= 40 and not kinds & {"flowchart", "chart", "diagram"}:
             items.append({"kind": "diagram", "title": "", "description": "벡터 도형(다이어그램/플로우차트 추정)", "source": "local"})
         return items
@@ -104,6 +109,7 @@ def analyze(path: Path, dpi: int = 110) -> list[PageInfo]:
     with fitz.open(path) as doc:
         for i, page in enumerate(doc):
             area = page.rect.width * page.rect.height or 1
+            page_notes: list[str] = []
             n_images = 0
             for info in page.get_image_info():
                 x0, y0, x1, y1 = info["bbox"]
@@ -117,12 +123,18 @@ def analyze(path: Path, dpi: int = 110) -> list[PageInfo]:
                 n_tables = len(page.find_tables().tables)
             except Exception:
                 n_tables = 0
-            text = page.get_text("text") or ""
+            n_ink = 0
+            for annot in page.annots() or []:
+                if annot.type[0] == fitz.PDF_ANNOT_INK:
+                    n_ink += 1
+                elif annot.info.get("content"):          # 메모 주석의 글자는 무료로 검색되게
+                    page_notes.append(annot.info["content"])
+            text = (page.get_text("text") or "") + ("\n" + "\n".join(page_notes) if page_notes else "")
             pix = page.get_pixmap(dpi=dpi)
             pages.append(PageInfo(
                 page_no=i + 1, width=pix.width, height=pix.height, text=text.strip(),
                 page_png=pix.tobytes("png"), n_images=n_images, n_drawings=n_drawings,
-                n_tables=n_tables, captions=_captions(text),
+                n_tables=n_tables, n_ink=n_ink, captions=_captions(text),
             ))
     return pages
 

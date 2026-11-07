@@ -92,7 +92,7 @@ class IndexJob:
             key = f"{meta['file_id']}_{pi.page_no}"
             items: list[dict] = []
             if pi.has_visual and router and router.enabled:
-                res = router.describe(extract.shrink_for_ai(pi.page_png, settings.vision_image_px))
+                res = router.describe(extract.shrink_for_ai(pi.page_png, settings.ai_image_px))
                 if res is not None:
                     ai_items, provider = res
                     items = [dict(it, source=provider) for it in ai_items]
