@@ -58,6 +58,10 @@ class IndexJob:
                 self.db.delete_file(gone)
 
             for meta in files:
+                if router.configured and not router.enabled:
+                    # AI 한도가 다 떨어짐 → 남은 파일을 AI 없이 돌려 봐야 나중에 다시 해야 하므로 여기서 멈춤
+                    st["stopped_reason"] = router.last_error or "AI 사용 한도 소진"
+                    break
                 st["current"] = f"{meta['path'].rstrip('/')}/{meta['name']}"
                 expected = f"{meta['version_key']}|{analysis_signature()}"
                 if meta["version_key"] and self.db.file_version(meta["file_id"]) == expected:
@@ -88,7 +92,8 @@ class IndexJob:
                     export_site(self.db, Path(settings.export_dir))
                 except OSError as e:
                     st["errors"].append(f"내보내기 실패: {e}")
-            st["phase"] = "완료"
+            st["phase"] = "중단(AI 한도 소진) — 한도가 풀린 뒤 '색인 시작'을 누르면 이어서" \
+                if st.get("stopped_reason") else "완료"
         except Exception as e:
             st["phase"] = "오류"
             st["errors"].append(str(e))

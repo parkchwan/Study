@@ -463,3 +463,17 @@ def test_logo_items_filtered(env, monkeypatch):
     n = job.index_local_file({"file_id": "G", "name": "s.pdf", "mime_type": "application/pdf", "path": "/",
                               "web_link": "", "version_key": "1"}, tmp / "sheet.pdf", vision.VisionRouter(db))
     assert n == 0 and db.stats()["pages"] == 0      # 로고만 있던 빈 답안지 → 색인 안 됨
+
+
+def test_stop_when_ai_quota_exhausted(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    from app.drive import LocalFolder
+    root = tmp / "q"; root.mkdir()
+    for i in range(3): make_pdf(root / f"{i}.pdf")
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    def gem(c, j, model=None): raise vision.QuotaError("quota", 403)
+    monkeypatch.setattr(vision, "_gemini", gem)
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    st = job.status()
+    assert "중단" in st["phase"] and st["done"] == 1          # 첫 파일에서 한도 확인 후 나머지는 건드리지 않음
