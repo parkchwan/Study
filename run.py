@@ -29,7 +29,8 @@ def main() -> None:
     if "--no-browser" not in sys.argv:
         threading.Thread(target=lambda: (time.sleep(2), webbrowser.open(url)), daemon=True).start()
     import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=port)
+    # 화면 갱신용 요청(GET /api/status 등)은 찍지 않음 → 경고·오류가 잘 보이게
+    uvicorn.run("app.main:app", host="127.0.0.1", port=port, access_log=False)
 
 
 if __name__ == "__main__":
