@@ -57,7 +57,7 @@ def analysis_signature() -> str:
 
 
 def max_tokens() -> int:
-    return 2500 if settings.handwriting else 800
+    return 4096 if settings.handwriting else 1024   # 손글씨를 길게 받아 적다 답이 잘리지 않도록
 
 
 class QuotaError(Exception):
@@ -101,6 +101,10 @@ class ModelNotFound(Exception):
     pass
 
 
+class ServerBusy(Exception):
+    """5xx(서버 과부하) 또는 네트워크 끊김 — 잠시 후 다시 하면 대개 성공."""
+
+
 def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list[dict]:
     model = model or settings.gemini_model
     body = {
@@ -118,6 +122,8 @@ def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list
         raise ModelNotFound(model)
     if r.status_code in (429, 403):
         raise _quota("gemini", r)
+    if r.status_code >= 500:
+        raise ServerBusy(f"gemini {r.status_code}")
     r.raise_for_status()
     parts = r.json()["candidates"][0]["content"]["parts"]
     return _parse("".join(p.get("text", "") for p in parts))
@@ -172,6 +178,8 @@ def _openai(client: httpx.Client, jpeg: bytes) -> list[dict]:
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
     if r.status_code in (429, 403):
         raise _quota("openai", r)
+    if r.status_code >= 500:
+        raise ServerBusy(f"openai {r.status_code}")
     r.raise_for_status()
     return _parse(r.json()["choices"][0]["message"]["content"] or "{}")
 
@@ -234,7 +242,8 @@ class VisionRouter:
         if not self.budget_left():
             return None
         for p in self.providers():
-            for attempt in range(len(self.retry_waits) + 1):
+            parse_retry_used = False
+            for attempt in range(len(self.retry_waits) + 2):
                 try:
                     if p == "gemini":
                         items = _gemini(self.client, jpeg, self.gemini_model)
@@ -260,7 +269,24 @@ class VisionRouter:
                     log.warning("사용 가능한 Gemini 모델을 찾지 못함 → Gemini 사용 중지")
                     self.disabled.add(p)
                     break
-                except Exception as e:  # 네트워크/파싱 오류: 이번 페이지만 다음 제공자로
+                except (ServerBusy, httpx.TransportError) as e:
+                    # 서버 과부하(503)·연결 끊김 → 기다렸다 재시도. 계속 안 되면 이 페이지만 다음으로 미룸
+                    if attempt < len(self.retry_waits):
+                        wait = self.retry_waits[attempt]
+                        log.warning("%s 서버 응답 없음(%s) → %ss 후 재시도", p, e, wait)
+                        self.sleep(wait)
+                        continue
+                    log.warning("%s 계속 응답 없음 → 이 페이지는 다음 색인 때 다시 시도", p)
+                    break
+                except (ValueError, KeyError, IndexError) as e:
+                    # 답이 잘리거나 형식이 깨짐 → 바로 한 번 더 요청
+                    if not parse_retry_used:
+                        parse_retry_used = True
+                        log.warning("%s 응답 형식 오류 → 다시 요청: %s", p, e)
+                        continue
+                    log.warning("%s 응답 형식 오류 반복 → 이 페이지는 다음 색인 때 다시 시도", p)
+                    break
+                except Exception as e:  # 그 밖의 오류: 이번 페이지만 다음 제공자로
                     log.warning("%s 실패: %s", p, e)
                     break
         self.calls["failed"] += 1

@@ -317,3 +317,19 @@ def test_reanalyze_when_prompt_changes_and_cleanup(env, monkeypatch):
     assert "R_2" in keys                              # 캡션(Figure 1.)이 있어 남음
     for k in {"R_2", "R_3"} - keys:
         assert not (settings.pages_dir / f"{k}.webp").exists()
+
+
+def test_server_busy_and_bad_json_retry(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    seq = iter([vision.ServerBusy("503"), ValueError("Expecting ':' delimiter"),
+                [{"kind": "figure", "title": "ok", "description": "", "keywords": []}]])
+    def gem(c, j, model=None):
+        v = next(seq)
+        if isinstance(v, Exception): raise v
+        return v
+    monkeypatch.setattr(vision, "_gemini", gem)
+    r = vision.VisionRouter(db); waits = []; r.sleep = waits.append
+    items, prov = r.describe(b"z")
+    assert prov == "gemini" and waits == [10] and "gemini" not in r.disabled
