@@ -562,3 +562,26 @@ def test_toc_without_leaders_and_export_filter(env):
     out = tmp / "web"; export_site(db, out)
     keys = [p[0] for p in json.loads((out / "data.json").read_text(encoding="utf-8"))["pages"]]
     assert keys == ["O_3"]
+
+
+def test_originals_export_and_pc_route(env, monkeypatch):
+    import json
+    tmp, db, job, settings = env
+    from app.drive import LocalFolder
+    from app.export import export_site
+    monkeypatch.setattr(settings, "export_originals", True)
+    root = tmp / "drv"; root.mkdir(); make_pdf(root / "책.pdf")
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    out = tmp / "web"; export_site(db, out)
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    orig = data["files"][0][5]
+    assert orig.endswith(".pdf") and (out / "files" / orig).stat().st_size == (root / "책.pdf").stat().st_size
+    assert (out / "pdf.html").exists() and (out / "pdfjs" / "pdf.worker.min.js").exists()
+    # PC 화면: /files/<id>.pdf 가 원본을 Range 요청으로 일부만 돌려줌
+    from fastapi.testclient import TestClient
+    import importlib, app.main as m
+    importlib.reload(m)
+    c = TestClient(m.app)
+    r = c.get(f"/files/{orig}", headers={"Range": "bytes=0-99"})
+    assert r.status_code == 206 and len(r.content) == 100
+    assert c.get("/files/nope.pdf").status_code == 404 and c.get("/pdf.html").status_code == 200

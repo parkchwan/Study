@@ -24,6 +24,8 @@ class Settings:
     thumb_px: int = 360
     # 보기 전용 사이트를 내보낼 폴더 (예: NAS의 web 공유폴더). 설정하면 색인 끝날 때 자동 내보내기
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", ""))
+    # 원본 PDF도 NAS로 복사 → 태블릿에서 '원본 열기'로 해당 쪽을 바로 봄 (처음 한 번은 용량만큼 복사 시간)
+    export_originals: bool = field(default_factory=lambda: os.getenv("EXPORT_ORIGINALS", "on").lower() in ("on", "1", "true", "yes"))
     # 폴더 칸에 처음 채워 둘 기본 폴더 (화면에서 바꿀 수 있음)
     default_folder: str = field(default_factory=lambda: os.getenv("DEFAULT_FOLDER", r"G:\내 드라이브\건축시공기술사"))
 

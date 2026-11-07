@@ -34,6 +34,7 @@ class ImmutableStatic(StaticFiles):
         return resp
 
 
+app.mount("/pdfjs", StaticFiles(directory=STATIC / "pdfjs"), name="pdfjs")
 app.mount("/img/pages", ImmutableStatic(directory=settings.pages_dir), name="pages")
 app.mount("/img/thumbs", ImmutableStatic(directory=settings.thumbs_dir), name="thumbs")
 
@@ -45,6 +46,20 @@ class IndexReq(BaseModel):
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/pdf.html")
+def pdf_viewer():
+    return FileResponse(STATIC / "pdf.html")
+
+
+@app.get("/files/{name}")
+def original_file(name: str):
+    """PC 화면의 '원본 열기': 색인한 원본 파일 (Range 요청 지원 → 큰 PDF도 필요한 쪽만)."""
+    path = db.file_abs_path(Path(name).stem)
+    if not path or not Path(path).exists() or Path(path).suffix.lower() != Path(name).suffix.lower():
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.post("/api/index")

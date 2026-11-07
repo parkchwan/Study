@@ -35,6 +35,18 @@ def _sync_dir(src: Path, dst: Path, keep: set[str]) -> None:
             d.unlink()
 
 
+ORIGINAL_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def original_name(p: dict) -> str:
+    """'원본 열기'용 파일 이름 (내 PC 폴더로 색인한 PDF·이미지만)."""
+    ap = p.get("abs_path")
+    if not ap or not settings.export_originals:
+        return ""
+    ext = Path(ap).suffix.lower()
+    return f"{p['file_id']}{ext}" if ext in ORIGINAL_EXTS else ""
+
+
 def build_payload(db: DB) -> tuple[dict, dict, list]:
     """(data, text, thesaurus): 화면이 쓰는 데이터. NAS 내보내기와 PC 화면이 같은 것을 씀."""
     from . import thesaurus
@@ -53,7 +65,7 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     fidx: dict[tuple, int] = {}
     cpages, texts = [], {}
     for p in pages:
-        fk = (p["file_name"], p["path"], p["web_link"], p["page_count"], p["v"])
+        fk = (p["file_name"], p["path"], p["web_link"], p["page_count"], p["v"], original_name(p))
         if fk not in fidx:
             fidx[fk] = len(files)
             files.append(list(fk))
@@ -64,10 +76,37 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     data = {
         "meta": {"folder_name": db.get_meta("folder_name"), "v": 2,
                  "exported_at": time.strftime("%Y-%m-%d %H:%M")},
-        "files": files,      # [파일명, 경로, 링크, 총쪽수, 이미지버전]
+        "files": files,      # [파일명, 경로, 링크, 총쪽수, 이미지버전, 원본파일이름(files/ 아래, 없으면 "")]
         "pages": cpages,     # [page_key, 파일번호, 쪽, [[종류, 제목, 짧은설명, 분석]]]
     }
     return data, texts, thesaurus.groups(db)
+
+
+def _copy_viewer(out_dir: Path) -> None:
+    """원본 PDF 보기 화면(pdf.html + pdf.js)을 함께 내보냄."""
+    (out_dir / "pdfjs").mkdir(exist_ok=True)
+    for rel in ("pdf.html", "pdfjs/pdf.min.js", "pdfjs/pdf.worker.min.js", "pdfjs/LICENSE"):
+        s, d = STATIC / rel, out_dir / rel
+        if not d.exists() or d.stat().st_size != s.stat().st_size or rel == "pdf.html":
+            shutil.copyfile(s, d)
+
+
+def _sync_originals(db: DB, dst: Path, keep: set[str]) -> None:
+    """원본 파일을 NAS로 복사 (바뀐 것만). G: 드라이브 파일은 이때 내려받아짐."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in sorted(keep):
+        src = db.file_abs_path(Path(name).stem)
+        if not src or not Path(src).exists():
+            continue
+        d, ss = dst / name, Path(src).stat()
+        if d.exists() and d.stat().st_size == ss.st_size and d.stat().st_mtime >= ss.st_mtime - 2:
+            continue
+        tmp = dst / (name + ".part")
+        shutil.copyfile(src, tmp)            # 복사 중 끊겨도 반쪽 파일이 원본 행세를 하지 않게
+        tmp.replace(d)
+    for d in dst.iterdir():
+        if d.name not in keep:
+            d.unlink()
 
 
 def export_site(db: DB, out_dir: Path) -> dict:
@@ -94,6 +133,9 @@ def export_site(db: DB, out_dir: Path) -> dict:
     tmp = out_dir / "data.json.tmp"
     tmp.write_text(dump(data), encoding="utf-8")
     keep = {p["page_key"] + ".webp" for p in pages}
+    _copy_viewer(out_dir)
+    if settings.export_originals:
+        _sync_originals(db, out_dir / "files", {f[5] for f in data["files"] if f[5]})
     _sync_dir(settings.pages_dir, out_dir / "img" / "pages", keep)
     _sync_dir(settings.thumbs_dir, out_dir / "img" / "thumbs", keep)
     html = (STATIC / "index.html").read_text(encoding="utf-8")

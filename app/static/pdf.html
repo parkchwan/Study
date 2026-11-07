@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원본 보기</title>
+<style>
+  :root { --bg: #2b2d31; --bar: #16171a; --text: #e8e9ec; --muted: #9aa0a8; --line: #3a3d44; --btn: #24262b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  .bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+         padding: 8px 12px; background: var(--bar); border-bottom: 1px solid var(--line); }
+  button { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn); color: var(--text); font-size: 15px; }
+  input { width: 64px; padding: 7px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn); color: var(--text);
+          text-align: center; font-size: 15px; }
+  #title { flex: 1; min-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; color: var(--muted); }
+  #wrap { display: flex; justify-content: center; padding: 10px; }
+  canvas { background: #fff; max-width: 100%; height: auto; box-shadow: 0 2px 20px rgba(0,0,0,.6); }
+  #msg { text-align: center; padding: 40px 16px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button id="prev">← 이전</button>
+  <input id="num" inputmode="numeric" aria-label="쪽 번호"> <span id="total"></span>
+  <button id="next">다음 →</button>
+  <span id="title"></span>
+</div>
+<div id="msg">원본 PDF를 여는 중…</div>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<script src="pdfjs/pdf.min.js"></script>
+<script>
+// 원본 PDF를 지정한 쪽부터 보여 줌. 큰 파일도 필요한 부분만 받아 옴(Range 요청).
+const P = new URLSearchParams(location.search);
+const src = P.get("src"), name = P.get("name") || "";
+let page = Math.max(1, parseInt(P.get("page") || "1", 10)), doc = null, busy = false, want = 0;
+const $ = id => document.getElementById(id), cv = $("cv"), ctx = cv.getContext("2d");
+$("title").textContent = name; document.title = name ? `${name} · 원본` : "원본 보기";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "pdfjs/pdf.worker.min.js";
+pdfjsLib.getDocument({ url: src, disableAutoFetch: true, disableStream: true, rangeChunkSize: 262144 }).promise
+  .then(d => { doc = d; $("total").textContent = `/ ${d.numPages}`; show(page); })
+  .catch(e => { $("msg").textContent = "원본을 열 수 없어요: " + e.message; });
+
+async function show(n) {
+  if (!doc) return;
+  n = Math.min(doc.numPages, Math.max(1, n));
+  if (busy) { want = n; return; }
+  busy = true; page = n; $("num").value = n; $("msg").textContent = "";
+  try {
+    const pg = await doc.getPage(n);
+    const dpr = window.devicePixelRatio || 1, base = pg.getViewport({ scale: 1 });
+    const cssW = Math.min(window.innerWidth - 20, 1600), vp = pg.getViewport({ scale: cssW / base.width * dpr });
+    cv.width = vp.width; cv.height = vp.height; cv.style.width = (vp.width / dpr) + "px";
+    await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+    history.replaceState(null, "", `?${new URLSearchParams({ src, page: n, name })}`);
+    window.scrollTo(0, 0);
+  } catch (e) { $("msg").textContent = "이 쪽을 그리지 못했어요: " + e.message; }
+  busy = false;
+  if (want) { const w = want; want = 0; show(w); }
+}
+$("prev").onclick = () => show(page - 1);
+$("next").onclick = () => show(page + 1);
+$("num").onchange = () => show(parseInt($("num").value, 10) || page);
+document.onkeydown = e => { if (e.key === "ArrowRight") show(page + 1); if (e.key === "ArrowLeft") show(page - 1); };
+// 손가락으로 밀어서 넘기기 (확대한 상태에서는 넘기지 않음)
+let sx = 0, sy = 0;
+addEventListener("touchstart", e => { if (e.touches.length === 1) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; } }, { passive: true });
+addEventListener("touchend", e => {
+  if ((window.visualViewport && visualViewport.scale > 1.05) || !e.changedTouches.length) return;
+  const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) show(page + (dx < 0 ? 1 : -1));
+}, { passive: true });
+</script>
+</body>
+</html>

@@ -215,9 +215,11 @@ class DB:
         out: dict[str, dict] = {}
         rows = self.conn.execute(
             "SELECT p.page_key, p.page_no, p.width, p.height, p.text, f.name AS file_name, f.path, f.web_link,"
-            " f.page_count, f.version_key FROM pages p JOIN files f ON f.file_id=p.file_id ORDER BY f.name, p.page_no")
+            " f.page_count, f.version_key, f.file_id, f.abs_path FROM pages p JOIN files f ON f.file_id=p.file_id"
+            " ORDER BY f.name, p.page_no")
         for r in rows:
             out[r["page_key"]] = {
+                "file_id": r["file_id"], "abs_path": r["abs_path"],
                 "page_key": r["page_key"], "page_no": r["page_no"], "width": r["width"], "height": r["height"],
                 "file_name": r["file_name"], "path": r["path"], "web_link": r["web_link"],
                 "page_count": r["page_count"], "v": img_version(r["version_key"]),
@@ -259,6 +261,10 @@ class DB:
 
     def thesaurus_groups(self) -> list[list[str]]:
         return [json.loads(r["variants"]) for r in self.conn.execute("SELECT variants FROM thesaurus")]
+
+    def file_abs_path(self, file_id: str) -> str | None:
+        row = self.conn.execute("SELECT abs_path FROM files WHERE file_id=?", (file_id,)).fetchone()
+        return row["abs_path"] if row else None
 
     def stats(self) -> dict:
         c = self.conn
