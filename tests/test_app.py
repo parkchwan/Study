@@ -446,3 +446,20 @@ def test_office_without_libreoffice_is_skipped(env, monkeypatch):
     job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
     st = job.status()
     assert st["skipped_office"] == 1 and not st["errors"]
+
+
+def test_logo_items_filtered(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    assert vision.is_junk({"kind": "figure", "title": "한국산업인력공단 로고", "description": ""})
+    assert not vision.is_junk({"kind": "figure", "title": "흙막이 단면도", "description": "지하수위"})
+    assert not vision.is_junk({"kind": "handwriting", "title": "필기", "description": "회사 로고 디자인 메모"})
+    doc = fitz.open(); p = doc.new_page(); p.insert_text((72, 72), "blank answer sheet")
+    for r in range(20): p.draw_line((50, 100 + r * 20), (550, 100 + r * 20))
+    doc.save(tmp / "sheet.pdf")
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    monkeypatch.setattr(vision, "_gemini", lambda c, j, model=None: [{"kind": "figure", "title": "한국산업인력공단 로고",
+                                                                       "description": "", "keywords": []}])
+    n = job.index_local_file({"file_id": "G", "name": "s.pdf", "mime_type": "application/pdf", "path": "/",
+                              "web_link": "", "version_key": "1"}, tmp / "sheet.pdf", vision.VisionRouter(db))
+    assert n == 0 and db.stats()["pages"] == 0      # 로고만 있던 빈 답안지 → 색인 안 됨

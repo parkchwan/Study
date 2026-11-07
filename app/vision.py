@@ -53,7 +53,17 @@ def analysis_signature() -> str:
     """분석 방식 식별자. 이게 바뀌면(AI 지시 변경, 키 추가 등) 이미 색인한 파일도 다시 분석."""
     ai = (settings.vision_provider in ("auto", "gemini") and settings.gemini_api_key) or \
          (settings.vision_provider in ("auto", "openai") and settings.openai_api_key)
-    return prompt_version() if ai else "local"
+    # "-f1": 결과 거르기 규칙 버전. 규칙만 바뀌면 AI를 다시 부르지 않고(캐시) 결과만 다시 정리
+    return (prompt_version() if ai else "local") + "-f1"
+
+
+_JUNK = ("로고", "logo", "엠블럼", "emblem", "워터마크", "watermark", "심볼마크", "바닥글", "머리글", "footer", "header")
+
+
+def is_junk(item: dict) -> bool:
+    """AI가 지시를 어기고 넣은 로고·워터마크·머리글 같은 항목인지."""
+    text = f"{item.get('title', '')} {item.get('description', '')[:80]}".lower()
+    return item.get("kind") != "handwriting" and any(w in text for w in _JUNK)
 
 
 def max_tokens() -> int:

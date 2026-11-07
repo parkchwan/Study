@@ -10,7 +10,7 @@ from pathlib import Path
 from . import extract
 from .config import settings
 from .db import DB
-from .vision import VisionRouter, analysis_signature
+from .vision import VisionRouter, analysis_signature, is_junk
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class IndexJob:
                     res = None                    # AI가 거부한 페이지 → 아래에서 로컬 분석으로 대체(재시도 안 함)
                 else:
                     ai_items, provider = res
-                    items = [dict(it, source=provider) for it in ai_items]
+                    items = [dict(it, source=provider) for it in ai_items if not is_junk(it)]
                     # 로컬 캡션은 정확한 제목이므로 AI 결과에 덧붙여 보존
                     titles = " ".join(i.get("title", "") for i in items)
                     items += [dict(c, source="local") for c in pi.captions if c["title"] not in titles]
