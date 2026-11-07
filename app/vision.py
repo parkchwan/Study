@@ -25,7 +25,9 @@ log = logging.getLogger(__name__)
 KINDS = ["figure", "table", "flowchart", "chart", "diagram", "photo", "screenshot", "handwriting"]
 BASE_PROMPT = (
     "이 문서 페이지 이미지에 있는 시각 요소(그림, 표, 플로우차트, 차트, 다이어그램, 사진, 스크린샷)를 모두 찾아라. "
-    "본문 텍스트만 있는 영역은 무시. 각 요소마다 kind는 "
+    "본문 텍스트만 있는 영역은 무시. 다음은 시각 요소가 아니므로 절대 넣지 마라: 로고·엠블럼·워터마크, "
+    "머리글/바닥글/쪽번호, 페이지 테두리·장식선, 빈 답안지·원고지·괘선(줄만 있는 칸), 빈 양식, 배경 무늬. "
+    "각 요소마다 kind는 "
     + "|".join(KINDS)
     + " 중 하나, title은 캡션이나 짧은 제목(없으면 내용으로 만든 10단어 이하 제목), "
     "description은 검색에 유용한 1~2문장 한국어 설명, keywords는 한국어/영어 검색어 3~8개. "
@@ -44,7 +46,7 @@ def prompt() -> str:
 
 
 def prompt_version() -> str:
-    return "v2-hw" if settings.handwriting else "v1"
+    return "v3-hw" if settings.handwriting else "v3"
 
 
 def max_tokens() -> int:

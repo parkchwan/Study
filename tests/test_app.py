@@ -277,3 +277,18 @@ def test_gemini_key_not_in_url(monkeypatch):
     c = httpx.Client(transport=httpx.MockTransport(handler))
     assert vision._gemini(c, b"img", "gemini-3.5-flash-lite") == []
     assert "SECRET123" not in seen["url"] and seen["hdr"] == "SECRET123"
+
+
+def test_ai_says_nothing_means_nothing(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    doc = fitz.open(); p = doc.new_page()
+    for r in range(60):                          # 빈 답안지처럼 괘선만 잔뜩
+        p.draw_line((50, 50 + r * 12), (550, 50 + r * 12))
+    doc.save(tmp / "blank.pdf")
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    monkeypatch.setattr(vision, "_gemini", lambda c, j, model=None: [])
+    n = job.index_local_file({"file_id": "K", "name": "blank.pdf", "mime_type": "application/pdf", "path": "/",
+                              "web_link": "", "version_key": "1"}, tmp / "blank.pdf", vision.VisionRouter(db))
+    assert n == 0 and db.stats()["pages"] == 0   # 로컬 '벡터 도형' 추정으로 채우지 않음
+    assert "로고" in vision.prompt()

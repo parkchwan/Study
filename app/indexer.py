@@ -103,6 +103,7 @@ class IndexJob:
         def finish(pi, wants_ai, fut):
             key = f"{meta['file_id']}_{pi.page_no}"
             items: list[dict] = []
+            res = None
             if wants_ai:
                 res = fut.result() if fut is not None else None
                 if res is None:
@@ -113,7 +114,8 @@ class IndexJob:
                     # 로컬 캡션은 정확한 제목이므로 AI 결과에 덧붙여 보존
                     titles = " ".join(i.get("title", "") for i in items)
                     items += [dict(c, source="local") for c in pi.captions if c["title"] not in titles]
-            if not items and pi.has_visual:
+            if res is None and not items and pi.has_visual:
+                # AI를 못 쓴 경우에만 로컬 추정으로 채움. AI가 '시각자료 없음'이라 답하면 그 판단을 따름
                 items = pi.local_items()
             st["page"] = pi.page_no
             if not items:
