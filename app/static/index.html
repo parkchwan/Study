@@ -210,6 +210,7 @@ async function poll() {
   } else {
     $("bar").style.width = j.phase ? "100%" : "0";
     $("btnIndex").disabled = false;
+    if (j.incomplete) msg += ` · AI 미완료 파일 ${j.incomplete}개 (한도 도달) → 나중에 "색인 시작"을 다시 누르면 이어서 분석`;
     if (j.errors && j.errors.length) msg += ` · 오류 ${j.errors.length}건: ${j.errors.slice(-1)[0]}`;
   }
   $("status").textContent = msg;

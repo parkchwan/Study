@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import logging
+import time
 
 import httpx
 
@@ -50,7 +51,19 @@ def max_tokens() -> int:
 
 
 class QuotaError(Exception):
-    pass
+    """429(요청 한도) 또는 403(키/권한 문제)."""
+    def __init__(self, msg: str, status: int = 429, retry_after: float | None = None):
+        super().__init__(msg)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def _quota(provider: str, r: httpx.Response) -> QuotaError:
+    try:
+        ra = float(r.headers.get("retry-after", ""))
+    except ValueError:
+        ra = None
+    return QuotaError(f"{provider} {r.status_code}: {r.text[:200]}", r.status_code, ra)
 
 
 def _parse(text: str) -> list[dict]:
@@ -83,7 +96,7 @@ def _gemini(client: httpx.Client, jpeg: bytes) -> list[dict]:
     }
     r = client.post(url, params={"key": settings.gemini_api_key}, json=body)
     if r.status_code in (429, 403):
-        raise QuotaError(f"gemini {r.status_code}")
+        raise _quota("gemini", r)
     r.raise_for_status()
     parts = r.json()["candidates"][0]["content"]["parts"]
     return _parse("".join(p.get("text", "") for p in parts))
@@ -105,7 +118,7 @@ def _openai(client: httpx.Client, jpeg: bytes) -> list[dict]:
     r = client.post("https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
     if r.status_code in (429, 403):
-        raise QuotaError(f"openai {r.status_code}")
+        raise _quota("openai", r)
     r.raise_for_status()
     return _parse(r.json()["choices"][0]["message"]["content"] or "{}")
 
@@ -116,6 +129,15 @@ class VisionRouter:
         self.calls = {"gemini": 0, "openai": 0, "cache": 0, "failed": 0}
         self.client = httpx.Client(timeout=60)
         self.disabled: set[str] = set()
+        self.sleep = time.sleep          # 테스트에서 교체 가능
+        self.retry_waits = (10, 30, 60)  # 분당 요청 한도(무료 등급) 대비: 기다렸다 재시도
+
+    @property
+    def configured(self) -> bool:
+        """설정상 AI를 쓰기로 되어 있는지 (한도 초과로 잠시 꺼진 것과 무관)."""
+        mode = settings.vision_provider
+        return (mode in ("auto", "gemini") and bool(settings.gemini_api_key)) or \
+               (mode in ("auto", "openai") and bool(settings.openai_api_key))
 
     def providers(self) -> list[str]:
         mode = settings.vision_provider
@@ -141,15 +163,25 @@ class VisionRouter:
         if not self.budget_left():
             return None
         for p in self.providers():
-            try:
-                items = (_gemini if p == "gemini" else _openai)(self.client, jpeg)
-                self.calls[p] += 1
-                self.db.cache_put(h, p, {"items": items, "provider": p})
-                return items, p
-            except QuotaError as e:
-                log.warning("%s 한도 초과 → 다음 제공자로 전환: %s", p, e)
-                self.disabled.add(p)
-            except Exception as e:  # 네트워크/파싱 오류: 이번 페이지만 다음 제공자로
-                log.warning("%s 실패: %s", p, e)
+            fn = _gemini if p == "gemini" else _openai
+            for attempt in range(len(self.retry_waits) + 1):
+                try:
+                    items = fn(self.client, jpeg)
+                    self.calls[p] += 1
+                    self.db.cache_put(h, p, {"items": items, "provider": p})
+                    return items, p
+                except QuotaError as e:
+                    # 429는 대개 '분당 한도' → 잠깐 기다리면 풀림. 바로 비싼 제공자로 넘어가지 않음
+                    if e.status == 429 and attempt < len(self.retry_waits):
+                        wait = min(e.retry_after or self.retry_waits[attempt], 120)
+                        log.warning("%s 요청 한도 → %ss 후 재시도", p, wait)
+                        self.sleep(wait)
+                        continue
+                    log.warning("%s 사용 불가 → 다음 제공자로 전환: %s", p, e)
+                    self.disabled.add(p)
+                    break
+                except Exception as e:  # 네트워크/파싱 오류: 이번 페이지만 다음 제공자로
+                    log.warning("%s 실패: %s", p, e)
+                    break
         self.calls["failed"] += 1
         return None

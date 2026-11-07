@@ -76,13 +76,14 @@ def test_vision_router_fallback_and_cache(env, monkeypatch):
     def gem(c, j): calls.append("gemini"); raise vision.QuotaError("429")
     def oai(c, j): calls.append("openai"); return [{"kind": "flowchart", "title": "결재 흐름", "description": "승인 절차", "keywords": ["결재"]}]
     monkeypatch.setattr(vision, "_gemini", gem); monkeypatch.setattr(vision, "_openai", oai)
-    r = vision.VisionRouter(db)
+    r = vision.VisionRouter(db); r.sleep = lambda s: None
     items, prov = r.describe(b"img")
     assert prov == "openai" and items[0]["kind"] == "flowchart"
     items2, _ = r.describe(b"img")               # 캐시 적중 → 추가 호출 없음
-    assert calls == ["gemini", "openai"] and r.calls["cache"] == 1
+    # 429는 3번 재시도(총 4회) 후에야 OpenAI로 전환
+    assert calls == ["gemini"] * 4 + ["openai"] and r.calls["cache"] == 1
     r.describe(b"img2")                          # gemini는 한도초과로 비활성 → 바로 openai
-    assert calls[-1] == "openai" and calls.count("gemini") == 1
+    assert calls[-1] == "openai" and calls.count("gemini") == 4
 
 
 def test_parse_and_folder_id():
@@ -184,3 +185,31 @@ def test_handwriting(env, monkeypatch):
     assert r and r[0]["kind"] == "handwriting"
     monkeypatch.setattr(settings, "handwriting", False)
     assert "손글씨" not in vision.prompt() and vision.prompt_version() != "v2-hw"
+
+
+def test_rate_limit_retry_and_resume(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "vision_provider", "auto")
+    n = {"c": 0}
+    def gem(c, j):
+        n["c"] += 1
+        if n["c"] <= 2: raise vision.QuotaError("429", 429)
+        return [{"kind": "figure", "title": "ok", "description": "", "keywords": []}]
+    monkeypatch.setattr(vision, "_gemini", gem)
+    r = vision.VisionRouter(db); waits = []; r.sleep = waits.append
+    items, prov = r.describe(b"x")                # 분당 한도 → 기다렸다 재시도 후 성공
+    assert prov == "gemini" and waits == [10, 30] and "gemini" not in r.disabled
+
+    # 예산 소진 → 파일은 '미완료'로 저장되어 다음 색인 때 다시 처리
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    monkeypatch.setattr(settings, "vision_max_calls", 1)
+    meta = {"file_id": "B", "name": "b.pdf", "mime_type": "application/pdf", "path": "/", "web_link": "", "version_key": "v1"}
+    r2 = vision.VisionRouter(db); r2.sleep = lambda s: None
+    job.index_local_file(meta, pdf, r2)
+    assert db.file_version("B") == "" and job.state["incomplete"] == 1
+    monkeypatch.setattr(settings, "vision_max_calls", 0)
+    job.state = {}
+    job.index_local_file(meta, pdf, vision.VisionRouter(db))
+    assert db.file_version("B") == "v1"           # 다 분석되면 정상 버전 기록

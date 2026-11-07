@@ -88,11 +88,16 @@ class IndexJob:
         """로컬 파일 하나를 분석·렌더·저장. 저장된 항목 수 반환."""
         pages_out = []
         n_items = 0
+        incomplete = False      # AI 분석을 못 한 페이지가 있으면 다음 색인 때 다시 시도
         for pi in extract.analyze(local, dpi=settings.page_dpi):
             key = f"{meta['file_id']}_{pi.page_no}"
             items: list[dict] = []
-            if pi.has_visual and router and router.enabled:
-                res = router.describe(extract.shrink_for_ai(pi.page_png, settings.ai_image_px))
+            wants_ai = pi.has_visual and router is not None and router.configured
+            if wants_ai:
+                res = router.describe(extract.shrink_for_ai(pi.page_png, settings.ai_image_px)) \
+                    if router.enabled else None
+                if res is None:
+                    incomplete = True
                 if res is not None:
                     ai_items, provider = res
                     items = [dict(it, source=provider) for it in ai_items]
@@ -109,6 +114,11 @@ class IndexJob:
                               "text": pi.text, "items": items})
             n_items += len(items)
         meta = dict(meta)
+        if incomplete:
+            # 버전을 비워 두면 다음 색인 때 이 파일을 다시 처리 (이미 분석된 페이지는 캐시라 추가 비용 없음)
+            meta["version_key"] = ""
+            self.state.setdefault("incomplete", 0)
+            self.state["incomplete"] = self.state.get("incomplete", 0) + 1
         self.db.save_file(meta, pages_out)
         # 원본 캐시 파일은 렌더 후 삭제해 디스크 절약
         try:
