@@ -520,3 +520,23 @@ def test_payment_required_stops_ai(env, monkeypatch):
     r = vision.VisionRouter(db)
     r.client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(402, json={"error": {}})))
     assert r.describe(b"p") is None and "gemini" in r.disabled and "결제" in r.last_error
+
+
+def test_toc_and_lists_filtered():
+    from app import vision
+    j = vision.is_junk
+    assert j({"kind": "table", "title": "제3장 목차", "description": ""})
+    assert j({"kind": "table", "title": "Table of Contents", "description": ""})
+    assert j({"kind": "table", "title": "기출문제 리스트", "description": ""})
+    assert j({"kind": "table", "title": "용어 목록", "description": ""})
+    assert not j({"kind": "table", "title": "품질관리 체크리스트", "description": ""})
+    assert not j({"kind": "chart", "title": "타설 속도와 측압", "description": ""})
+    toc = "\n".join(f"제{i}장 콘크리트 공사 ········ {i * 12}" for i in range(1, 15))
+    assert vision.looks_like_toc(toc)
+    assert not vision.looks_like_toc("콘크리트 타설 시 주의사항\n타설 속도는 1.5m/h 이하\n측압 증가에 유의")
+
+
+def test_numeric_table_is_not_toc():
+    from app import vision
+    table = "\n".join(f"압축강도 {i}   {i * 3}" for i in range(20))
+    assert not vision.looks_like_toc(table)

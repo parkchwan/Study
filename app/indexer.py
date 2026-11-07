@@ -10,7 +10,7 @@ from pathlib import Path
 from . import extract
 from .config import settings
 from .db import DB
-from .vision import VisionRouter, analysis_signature, is_junk
+from .vision import VisionRouter, analysis_signature, is_junk, looks_like_toc
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +167,8 @@ class IndexJob:
                 else:
                     ai_items, provider = res
                     items = [dict(it, source=provider) for it in ai_items if not is_junk(it)]
+                    if looks_like_toc(pi.text):       # 목차 페이지 → 손글씨 외엔 버림
+                        items = [it for it in items if it["kind"] == "handwriting"]
                     # 로컬 캡션은 정확한 제목이므로 AI 결과에 덧붙여 보존
                     titles = " ".join(i.get("title", "") for i in items)
                     items += [dict(c, source="local") for c in pi.captions if c["title"] not in titles]

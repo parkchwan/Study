@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 
@@ -26,7 +27,8 @@ KINDS = ["figure", "table", "flowchart", "chart", "diagram", "photo", "screensho
 BASE_PROMPT = (
     "이 문서 페이지 이미지에 있는 시각 요소(그림, 표, 플로우차트, 차트, 다이어그램, 사진, 스크린샷)를 모두 찾아라. "
     "본문 텍스트만 있는 영역은 무시. 다음은 시각 요소가 아니므로 절대 넣지 마라: 로고·엠블럼·워터마크, "
-    "머리글/바닥글/쪽번호, 페이지 테두리·장식선, 빈 답안지·원고지·괘선(줄만 있는 칸), 빈 양식, 배경 무늬. "
+    "머리글/바닥글/쪽번호, 페이지 테두리·장식선, 빈 답안지·원고지·괘선(줄만 있는 칸), 빈 양식, 배경 무늬, "
+    "목차·차례·색인(찾아보기)·단순 항목/문제 목록 페이지. "
     "각 요소마다 kind는 "
     + "|".join(KINDS)
     + " 중 하나, title은 캡션이나 짧은 제목(없으면 내용으로 만든 10단어 이하 제목), "
@@ -54,16 +56,37 @@ def analysis_signature() -> str:
     ai = (settings.vision_provider in ("auto", "gemini") and settings.gemini_api_key) or \
          (settings.vision_provider in ("auto", "openai") and settings.openai_api_key)
     # "-f1": 결과 거르기 규칙 버전. 규칙만 바뀌면 AI를 다시 부르지 않고(캐시) 결과만 다시 정리
-    return (prompt_version() if ai else "local") + "-f1"
+    return (prompt_version() if ai else "local") + "-f2"
 
 
 _JUNK = ("로고", "logo", "엠블럼", "emblem", "워터마크", "watermark", "심볼마크", "바닥글", "머리글", "footer", "header")
 
 
+# 목차·색인·단순 목록: 검색해도 의미 없는 페이지
+_TOC = ("목차", "차례", "contents", "찾아보기", "색인", "index")
+_LIST = ("목록", "리스트", "list")
+_KEEP = ("체크리스트", "checklist", "check list")
+
+
 def is_junk(item: dict) -> bool:
-    """AI가 지시를 어기고 넣은 로고·워터마크·머리글 같은 항목인지."""
-    text = f"{item.get('title', '')} {item.get('description', '')[:80]}".lower()
-    return item.get("kind") != "handwriting" and any(w in text for w in _JUNK)
+    """AI가 지시를 어기고 넣은 로고·워터마크·머리글, 목차·색인·단순 목록 같은 항목인지."""
+    if item.get("kind") == "handwriting":
+        return False
+    title = str(item.get("title", "")).lower()
+    text = f"{title} {str(item.get('description', ''))[:80].lower()}"
+    if any(w in text for w in _JUNK) or any(w in text for w in _TOC):
+        return True
+    return any(w in title for w in _LIST) and not any(w in title for w in _KEEP)
+
+
+_TOC_LINE = re.compile(r"(\.{3,}|·{3,}|…+|-{3,})\s*\d{1,4}\s*$")   # 점선 뒤 쪽 번호 (표의 숫자 열과 구분)
+
+
+def looks_like_toc(text: str) -> bool:
+    """'제1장 총칙 ······ 12'처럼 줄 끝에 쪽 번호가 붙은 줄이 많으면 목차 페이지."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    hits = sum(1 for l in lines if _TOC_LINE.search(l))
+    return hits >= 8 and hits >= len(lines) * 0.3
 
 
 def max_tokens() -> int:
