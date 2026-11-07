@@ -22,8 +22,8 @@ NAS에는 검색 기능이 들어 있는 정적 웹페이지(`index.html` + `dat
 
 1. DSM **패키지 센터 → Web Station** 설치 → `web` 공유폴더가 생깁니다.
 2. `web` 안에 `drive-index` 폴더를 만듭니다.
-3. PC의 `.env`에 `EXPORT_DIR=\\PCHNAS\web\drive-index` 추가 (NAS 이름 또는 IP)
-   - 탐색기 주소창에 `\\PCHNAS\web`을 입력해 열리는지 먼저 확인하세요.
+3. PC의 `.env`에 `EXPORT_DIR=\\PCHSNAS\web\drive-index` 추가 (NAS 이름 또는 IP)
+   - 탐색기 주소창에 `\\PCHSNAS\web`을 입력해 열리는지 먼저 확인하세요.
 4. PC에서 색인 → 끝나면 **자동으로 NAS에 내보내짐** (수동: 화면의 **NAS로 내보내기** 버튼, 또는 `python -m app.export`)
 5. 휴대폰/태블릿에서 `http://NAS-IP/drive-index/` 접속 → 크롬 메뉴 **홈 화면에 추가**하면 앱처럼 사용
 6. 밖에서 보려면 NAS와 휴대폰에 **Tailscale** 설치(패키지 센터 또는 tailscale.com에서 DSM용 패키지) → 포트 개방 없이 안전하게 접속

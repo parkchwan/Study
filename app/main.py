@@ -61,7 +61,7 @@ def start_index(req: IndexReq):
 @app.post("/api/export")
 def export():
     if not settings.export_dir:
-        raise HTTPException(400, ".env에 EXPORT_DIR(예: \\\\PCHNAS\\web\\drive-index)를 설정하세요.")
+        raise HTTPException(400, ".env에 EXPORT_DIR(예: \\\\PCHSNAS\\web\\drive-index)를 설정하세요.")
     try:
         return export_site(db, Path(settings.export_dir))
     except OSError as e:
