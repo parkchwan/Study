@@ -193,12 +193,14 @@ $("btnIndex").onclick = async () => {
   poll();
 };
 
-let wasRunning = false;
+let wasRunning = false, folderTouched = false;
+$("folder").addEventListener("input", () => { folderTouched = true; });
 async function poll() {
   const s = await fetch("/api/status").then(r => r.json());
   const j = s.job, st = s.stats;
   state.byKind = st.by_kind || {}; renderChips();
-  if (s.folder_id && !$("folder").value) $("folder").value = s.folder_id;
+  // 마지막으로 색인한 폴더 → 없으면 기본 폴더(.env의 DEFAULT_FOLDER). 칸에서 자유롭게 바꿀 수 있음
+  if (!$("folder").value && !folderTouched) $("folder").value = s.folder_id || s.default_folder || "";
   const ai = s.gemini || s.openai ? `AI: ${s.vision_provider} (Gemini ${s.gemini ? "✓" : "✗"} / OpenAI ${s.openai ? "✓" : "✗"})` : "AI 키 없음 → 로컬 분석만";
   let msg = `${s.folder_name ? "📂 " + s.folder_name + " · " : ""}파일 ${st.files} · 시각자료 페이지 ${st.pages} · 항목 ${st.items} · ${ai}`;
   if (j.running) {

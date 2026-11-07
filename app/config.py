@@ -24,6 +24,8 @@ class Settings:
     thumb_px: int = 360
     # 보기 전용 사이트를 내보낼 폴더 (예: NAS의 web 공유폴더). 설정하면 색인 끝날 때 자동 내보내기
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", ""))
+    # 폴더 칸에 처음 채워 둘 기본 폴더 (화면에서 바꿀 수 있음)
+    default_folder: str = field(default_factory=lambda: os.getenv("DEFAULT_FOLDER", r"G:\내 드라이브\건축시공기술사"))
 
     service_account_file: str = field(default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", ""))
     oauth_client_file: str = field(default_factory=lambda: os.getenv("GOOGLE_OAUTH_CLIENT_FILE", ""))

@@ -75,7 +75,7 @@ def export():
 def status():
     return {"job": job.status(), "stats": db.stats(),
             "folder_id": db.get_meta("folder_id"), "folder_name": db.get_meta("folder_name"),
-            "vision_provider": settings.vision_provider,
+            "vision_provider": settings.vision_provider, "default_folder": settings.default_folder,
             "gemini": bool(settings.gemini_api_key), "openai": bool(settings.openai_api_key)}
 
 
