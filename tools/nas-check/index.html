@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAS 확인</title>
+<style>
+  :root { --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --ok: #067647; --bad: #b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1218; --panel: #171b23; --text: #e6e9ef; --muted: #98a2b3; --ok: #47cd89; --bad: #f97066; } }
+  body { margin: 0; padding: 16px; font: 16px/1.6 system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; background: var(--bg); color: var(--text); }
+  .box { max-width: 560px; margin: 0 auto; background: var(--panel); border-radius: 12px; padding: 20px; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  li { margin: 8px 0; } .ok { color: var(--ok); font-weight: 600; } .bad { color: var(--bad); font-weight: 600; }
+  .muted { color: var(--muted); font-size: 14px; } img { max-width: 100%; border-radius: 6px; }
+  #final { font-size: 18px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>📡 NAS 확인 페이지</h1>
+  <ol id="list"></ol>
+  <img id="img" alt="">
+  <div id="final"></div>
+  <p class="muted">이 화면을 태블릿에서도 열어 보세요. 모두 ✅ 이면 색인 결과를 NAS에서 볼 수 있습니다.</p>
+</div>
+<script>
+const list = document.getElementById("list");
+const results = [];
+function add(ok, label, detail = "") {
+  results.push(ok);
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="${ok ? "ok" : "bad"}">${ok ? "✅" : "❌"}</span> ${label} <span class="muted">${detail}</span>`;
+  list.appendChild(li);
+}
+(async () => {
+  add(location.protocol.startsWith("http"), "웹 서버로 열림 (Web Station)", location.protocol === "file:" ? "파일로 직접 열었어요. http://NAS주소/nas-check/ 로 여세요" : location.host);
+  try {
+    const r = await fetch("test.json", { cache: "no-cache" });
+    const j = await r.json();
+    add(r.ok && j.ok, "데이터 파일(JSON) 읽기 · 한글", j.msg);
+  } catch (e) { add(false, "데이터 파일(JSON) 읽기", String(e)); }
+  await new Promise(res => {
+    const img = document.getElementById("img"); const t0 = performance.now();
+    img.onload = () => { add(true, "페이지 이미지(WebP) 표시", `${Math.round(performance.now() - t0)}ms`); res(); };
+    img.onerror = () => { add(false, "페이지 이미지(WebP) 표시", "브라우저 또는 서버가 WebP를 지원하지 않아요"); res(); };
+    img.src = "test.webp?" + Date.now();
+  });
+  const t0 = performance.now(); let n = 0;
+  for (let i = 0; i < 20000; i++) if (("항목 " + i + " 철근 피복두께").includes("피복")) n++;
+  add(n === 20000, "브라우저 검색 속도", `2만 건 ${Math.round(performance.now() - t0)}ms`);
+  const all = results.every(Boolean);
+  document.getElementById("final").innerHTML = all
+    ? '<span class="ok">🎉 모두 통과 — 이 NAS로 보기 전용 사이트를 쓸 수 있어요.</span>'
+    : '<span class="bad">일부 실패 — 이 화면을 사진 찍어 보내 주세요.</span>';
+})();
+</script>
+</body>
+</html>
