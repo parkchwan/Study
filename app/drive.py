@@ -140,9 +140,16 @@ def local_dir(value: str) -> Path | None:
     return p if p.is_dir() else None
 
 
+def path_key(p: Path | str) -> str:
+    """파일 위치를 대소문자·구분자 차이 없이 비교하기 위한 키 (Windows는 대소문자 무시)."""
+    import os
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
 class LocalFolder:
     def __init__(self, root: Path):
         self.root = Path(root)
+        self.root_key = path_key(self.root)
 
     def folder_name(self, _folder_id: str) -> str:
         return self.root.name
@@ -154,14 +161,17 @@ class LocalFolder:
                 continue
             st = p.stat()
             rel = p.relative_to(self.root)
+            key = path_key(p)
             yield {
-                "file_id": "L" + hashlib.sha1(str(rel).encode()).hexdigest()[:20],
+                # 전체 경로 기준 ID → 상위 폴더로 색인하든 하위 폴더로 색인하든 같은 파일은 같은 ID
+                "file_id": "L" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:20],
                 "name": p.name,
                 "mime_type": "local" + p.suffix.lower(),
                 "path": "/" + str(rel.parent).replace("\\", "/") if str(rel.parent) != "." else "/",
                 "web_link": "",
                 "version_key": f"{st.st_size}-{int(st.st_mtime)}",
                 "_local": str(p),
+                "_local_key": key,
             }
 
     def fetch(self, meta: dict, _dest_dir: Path) -> Path:

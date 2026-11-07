@@ -50,14 +50,35 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
 
+def img_version(version_key: str | None) -> str:
+    """이미지 주소에 붙일 짧은 버전값: 파일이 바뀌어 다시 그리면 브라우저 캐시 대신 새 이미지를 받음."""
+    import hashlib
+    return hashlib.md5((version_key or "").encode()).hexdigest()[:8]
+
+
 class DB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.path = path
+        # 스레드마다 연결을 따로 씀: 색인(쓰기) 중에도 화면 검색(읽기)이 충돌 없이 동작 (WAL 모드)
+        self._local = threading.local()
+        self.lock = threading.Lock()      # 쓰기는 한 번에 하나씩
         self.conn.executescript(SCHEMA)
-        self.lock = threading.Lock()
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(files)")}
+        if "abs_path" not in cols:        # 이전 버전 DB 업그레이드
+            with self.lock, self.conn:
+                self.conn.execute("ALTER TABLE files ADD COLUMN abs_path TEXT")
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, timeout=30)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys=ON")
+            c.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = c
+        return c
 
     # ── meta ──
     def set_meta(self, k: str, v: str) -> None:
@@ -79,6 +100,23 @@ class DB:
     def all_file_ids(self) -> set[str]:
         return {r["file_id"] for r in self.conn.execute("SELECT file_id FROM files")}
 
+    def drive_api_files(self) -> set[str]:
+        return {r["file_id"] for r in self.conn.execute(
+            "SELECT file_id FROM files WHERE abs_path IS NULL AND COALESCE(mime_type,'') NOT LIKE 'local%'")}
+
+    def files_under(self, root: str) -> set[str]:
+        """내 PC 폴더 색인: 이 폴더 안에 있던 파일(+경로 정보가 없는 예전 버전 파일)."""
+        root = root.rstrip("\\/") + "\\" if "\\" in root else root.rstrip("/") + "/"
+        out = set()
+        for r in self.conn.execute("SELECT file_id, abs_path, mime_type FROM files"):
+            ap = r["abs_path"]
+            if ap is None:
+                if (r["mime_type"] or "").startswith("local"):
+                    out.add(r["file_id"])
+            elif ap.startswith(root):
+                out.add(r["file_id"])
+        return out
+
     def delete_file(self, file_id: str) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM items WHERE file_id=?", (file_id,))
@@ -92,10 +130,10 @@ class DB:
             self.conn.execute("DELETE FROM items WHERE file_id=?", (fid,))
             self.conn.execute("DELETE FROM pages WHERE file_id=?", (fid,))
             self.conn.execute(
-                "INSERT OR REPLACE INTO files(file_id, name, mime_type, path, web_link, version_key, page_count)"
-                " VALUES(?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO files(file_id, name, mime_type, path, web_link, version_key, page_count,"
+                " abs_path) VALUES(?,?,?,?,?,?,?,?)",
                 (fid, meta["name"], meta.get("mime_type"), meta.get("path"), meta.get("web_link"),
-                 meta.get("version_key"), len(pages)),
+                 meta.get("version_key"), len(pages), meta.get("_local_key")),
             )
             for p in pages:
                 self.conn.execute(
@@ -134,14 +172,16 @@ class DB:
     def search(self, q: str = "", kind: str = "", limit: int = 200, offset: int = 0) -> list[dict]:
         where, args = [], []
         for term in q.lower().split():
-            where.append("i.search_text LIKE ?")
+            term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("i.search_text LIKE ? ESCAPE '\\'")
             args.append(f"%{term}%")
         if kind:
             where.append("i.kind = ?")
             args.append(kind)
         sql = (
             "SELECT i.id, i.kind, i.title, i.description, i.keywords, i.source, i.page_key,"
-            " p.page_no, p.width, p.height, f.name AS file_name, f.path, f.web_link, f.page_count, f.file_id"
+            " p.page_no, p.width, p.height, f.name AS file_name, f.path, f.web_link, f.page_count, f.file_id,"
+            " f.version_key"
             " FROM items i JOIN pages p ON p.page_key=i.page_key JOIN files f ON f.file_id=i.file_id"
             + (" WHERE " + " AND ".join(where) if where else "")
             + " ORDER BY f.name, p.page_no, i.id LIMIT ? OFFSET ?"
@@ -166,13 +206,13 @@ class DB:
         out: dict[str, dict] = {}
         rows = self.conn.execute(
             "SELECT p.page_key, p.page_no, p.width, p.height, p.text, f.name AS file_name, f.path, f.web_link,"
-            " f.page_count FROM pages p JOIN files f ON f.file_id=p.file_id ORDER BY f.name, p.page_no")
+            " f.page_count, f.version_key FROM pages p JOIN files f ON f.file_id=p.file_id ORDER BY f.name, p.page_no")
         for r in rows:
             out[r["page_key"]] = {
                 "page_key": r["page_key"], "page_no": r["page_no"], "width": r["width"], "height": r["height"],
                 "file_name": r["file_name"], "path": r["path"], "web_link": r["web_link"],
-                "page_count": r["page_count"],
-                "t": " ".join(x for x in (r["file_name"], r["path"], (r["text"] or "")[:2000]) if x).lower(),
+                "page_count": r["page_count"], "v": img_version(r["version_key"]),
+                "t": " ".join(x for x in (r["file_name"], r["path"], (r["text"] or "")[:1000]) if x).lower(),
                 "items": []}
         for r in self.conn.execute("SELECT page_key, kind, title, description, keywords, source FROM items ORDER BY id"):
             p = out.get(r["page_key"])

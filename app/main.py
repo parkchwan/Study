@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import settings
-from .db import DB
+from .db import DB, img_version
 from .drive import LocalFolder, local_dir, parse_folder_id
 from .export import export_site
 from .indexer import IndexJob
@@ -80,15 +80,15 @@ def status():
 
 
 @app.get("/api/search")
-def search(q: str = "", kind: str = "", limit: int = 200, offset: int = 0):
-    rows = db.search(q, kind, min(limit, 500), offset)
+def search(q: str = "", kind: str = "", limit: int = 3000, offset: int = 0):
+    rows = db.search(q, kind, min(limit, 5000), offset)
     # 같은 페이지의 여러 항목은 하나의 결과로 묶음
     pages: dict[str, dict] = {}
     for r in rows:
         p = pages.setdefault(r["page_key"], {
             "page_key": r["page_key"], "file_name": r["file_name"], "path": r["path"], "page_no": r["page_no"],
             "page_count": r["page_count"], "web_link": r["web_link"], "width": r["width"], "height": r["height"],
-            "items": []})
+            "v": img_version(r["version_key"]), "items": []})
         p["items"].append({k: r[k] for k in ("kind", "title", "description", "keywords", "source")})
     return {"results": list(pages.values())}
 

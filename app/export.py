@@ -22,8 +22,14 @@ def _sync_dir(src: Path, dst: Path, keep: set[str]) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for name in keep:
         s, d = src / name, dst / name
-        if s.exists() and (not d.exists() or d.stat().st_size != s.stat().st_size):
-            shutil.copyfile(s, d)
+        if not s.exists():
+            continue
+        ss = s.stat()
+        if d.exists():
+            ds = d.stat()
+            if ds.st_size == ss.st_size and ds.st_mtime >= ss.st_mtime - 2:   # 같은 파일 → 복사 생략
+                continue
+        shutil.copy2(s, d)
     for d in dst.glob("*.webp"):
         if d.name not in keep:
             d.unlink()
@@ -33,13 +39,33 @@ def export_site(db: DB, out_dir: Path) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pages = db.export_pages()
+    # 태블릿이 처음 받는 data.json은 최대한 작게: 파일 정보는 한 번만, 항목은 [종류, 제목, 짧은 설명]만.
+    # 본문(OCR)·손글씨 전문·키워드는 text.json에 따로 → 화면을 먼저 띄운 뒤 받아서 검색/상세 표시
+    files: list[list] = []
+    fidx: dict[tuple, int] = {}
+    cpages, texts = [], {}
+    for p in pages:
+        fk = (p["file_name"], p["path"], p["web_link"], p["page_count"], p["v"])
+        if fk not in fidx:
+            fidx[fk] = len(files)
+            files.append(list(fk))
+        cpages.append([p["page_key"], fidx[fk], p["page_no"],
+                       [[it["kind"], it["title"] or "", (it["description"] or "")[:120], it["source"]]
+                        for it in p["items"]]])
+        texts[p["page_key"]] = [p["t"], [[it["description"] or "", it["keywords"] or ""] for it in p["items"]]]
+    stamp = time.strftime("%Y%m%d%H%M%S")
     data = {
-        "meta": {"folder_name": db.get_meta("folder_name"),
-                 "exported_at": time.strftime("%Y-%m-%d %H:%M")},
-        "pages": pages,
+        "meta": {"folder_name": db.get_meta("folder_name"), "v": 2,
+                 "exported_at": time.strftime("%Y-%m-%d %H:%M"), "text": f"text.json?{stamp}"},
+        "files": files,      # [파일명, 경로, 링크, 총쪽수, 이미지버전]
+        "pages": cpages,     # [page_key, 파일번호, 쪽, [[종류, 제목, 짧은설명, 분석]]]
     }
+    dump = lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+    ttmp = out_dir / "text.json.tmp"
+    ttmp.write_text(dump(texts), encoding="utf-8")
+    ttmp.replace(out_dir / "text.json")
     tmp = out_dir / "data.json.tmp"
-    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.write_text(dump(data), encoding="utf-8")
     keep = {p["page_key"] + ".webp" for p in pages}
     _sync_dir(settings.pages_dir, out_dir / "img" / "pages", keep)
     _sync_dir(settings.thumbs_dir, out_dir / "img" / "thumbs", keep)

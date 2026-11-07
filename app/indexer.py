@@ -50,7 +50,10 @@ class IndexJob:
             st["ai_enabled"] = router.enabled
 
             live_ids = {f["file_id"] for f in files}
-            for gone in self.db.all_file_ids() - live_ids:      # 폴더에서 사라진 파일 제거
+            # 이번에 색인하는 폴더 '안에서' 사라진 파일만 정리 (다른 폴더로 색인해 둔 자료는 그대로 둠)
+            root_key = getattr(drive, "root_key", None)
+            scope = self.db.files_under(root_key) if root_key else self.db.drive_api_files()
+            for gone in scope - live_ids:
                 self._remove_renders(self.db.page_keys(gone))
                 self.db.delete_file(gone)
 
@@ -70,7 +73,10 @@ class IndexJob:
                 st["done"] += 1
                 st["ai_calls"] = dict(router.calls)
                 st["gemini_model"] = router.gemini_model
+                st["ai_error"] = router.last_error
+                self._maybe_export(st)
             st["ai_calls"] = dict(router.calls)
+            st["ai_error"] = router.last_error
             if settings.export_dir:            # NAS 보기 전용 사이트 자동 갱신
                 st["phase"] = "NAS로 내보내는 중"
                 from .export import export_site
@@ -86,6 +92,18 @@ class IndexJob:
         finally:
             st["running"] = False
             st["finished"] = time.time()
+
+    def _maybe_export(self, st: dict, every_sec: int = 600) -> None:
+        """며칠씩 걸리는 색인 중에도 태블릿에서 볼 수 있게 10분마다 NAS로 중간 내보내기."""
+        if not settings.export_dir or time.time() - st.get("last_export", st.get("started", 0)) < every_sec:
+            return
+        from .export import export_site
+        try:
+            export_site(self.db, Path(settings.export_dir))
+            st["last_export"] = time.time()
+        except OSError as e:
+            st["last_export"] = time.time()
+            log.warning("NAS 중간 내보내기 실패: %s", e)
 
     @staticmethod
     def _remove_renders(keys: set[str]) -> None:
@@ -119,6 +137,8 @@ class IndexJob:
                 res = fut.result() if fut is not None else None
                 if res is None:
                     out["incomplete"] = True      # AI 분석 못 함 → 다음 색인 때 다시 시도
+                elif res[0] is None:
+                    res = None                    # AI가 거부한 페이지 → 아래에서 로컬 분석으로 대체(재시도 안 함)
                 else:
                     ai_items, provider = res
                     items = [dict(it, source=provider) for it in ai_items]

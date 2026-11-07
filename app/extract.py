@@ -69,6 +69,13 @@ class PageInfo:
 def to_pdf(path: Path) -> Path:
     """Office 파일을 LibreOffice로 PDF 변환 (설치되어 있을 때)."""
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:     # Windows는 설치해도 PATH에 안 잡히는 경우가 많음 → 기본 설치 위치 확인
+        for c in (r"C:\Program Files\LibreOffice\program\soffice.exe",
+                  r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+                  "/Applications/LibreOffice.app/Contents/MacOS/soffice"):
+            if Path(c).exists():
+                soffice = c
+                break
     if not soffice:
         raise RuntimeError("Office 파일 변환에는 LibreOffice가 필요합니다.")
     out = Path(tempfile.mkdtemp())
@@ -132,10 +139,14 @@ def _iter_pdf(path: Path, dpi: int) -> Iterator[PageInfo]:
                 n_drawings = len(page.get_drawings())
             except Exception:
                 n_drawings = 0
-            try:
-                n_tables = len(page.find_tables().tables)
-            except Exception:
-                n_tables = 0
+            n_tables = 0
+            if n_drawings >= 4:     # 표 찾기는 선(벡터)이 있을 때만 — 스캔본엔 의미 없고 메모리를 많이 씀
+                try:
+                    n_tables = len(page.find_tables().tables)
+                except Exception:
+                    n_tables = 0
+            if i % 20 == 19:
+                fitz.TOOLS.store_shrink(100)    # PDF 엔진의 이미지 캐시 비우기 → 대형 스캔본 메모리 억제
             n_ink = 0
             for annot in page.annots() or []:
                 if annot.type[0] == fitz.PDF_ANNOT_INK:

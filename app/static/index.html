@@ -83,7 +83,9 @@
   <div class="chips" id="chips"></div>
 </header>
 <main>
+  <div class="status" id="count" style="margin:0 0 10px"></div>
   <div class="grid" id="grid"></div>
+  <button id="more" hidden style="display:block;margin:16px auto">더 보기</button>
   <div class="empty" id="empty" hidden>결과가 없습니다.</div>
 </main>
 
@@ -125,6 +127,25 @@ $("chips").onclick = e => { const k = e.target.dataset.k; if (k === undefined) r
 let timer, seq = 0;
 $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("q").value.trim(); search(); }, 150); };
 
+const PAGE_CHUNK = 120;          // 결과 카드는 120개씩 나눠 그림 → 결과가 수천 개여도 바로 뜸
+const imgUrl = (dir, p) => `img/${dir}/${p.page_key}.webp?v=${p.v || ""}`;
+function cardHtml(p, i) {
+  const first = p.items[0] || {};
+  const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("");
+  return `<div class="card" data-i="${i}">
+    <img loading="lazy" src="${imgUrl("thumbs", p)}" alt="">
+    <div class="meta"><div>${tags}</div>
+      <div class="title">${esc(first.title || first.description || "")}</div>
+      <div class="file">${esc(p.file_name)} · ${p.page_no}p</div></div></div>`;
+}
+let shown = 0;
+function renderMore() {
+  const next = state.results.slice(shown, shown + PAGE_CHUNK);
+  $("grid").insertAdjacentHTML("beforeend", next.map((p, k) => cardHtml(p, shown + k)).join(""));
+  shown += next.length;
+  $("more").hidden = shown >= state.results.length;
+  $("more").textContent = `더 보기 (${state.results.length - shown}개 남음)`;
+}
 async function search() {
   const my = ++seq;
   const r = STATIC_MODE ? localSearch(state.q, state.kind)
@@ -132,21 +153,19 @@ async function search() {
   if (my !== seq) return;
   state.results = r.results;
   $("empty").hidden = r.results.length > 0;
-  $("grid").innerHTML = r.results.map((p, i) => {
-    const first = p.items[0] || {};
-    const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("");
-    return `<div class="card" data-i="${i}">
-      <img loading="lazy" src="img/thumbs/${p.page_key}.webp" alt="">
-      <div class="meta"><div>${tags}</div>
-        <div class="title">${esc(first.title || first.description || "")}</div>
-        <div class="file">${esc(p.file_name)} · ${p.page_no}p</div></div></div>`;
-  }).join("");
+  $("count").textContent = r.results.length ? `결과 ${r.results.length}쪽` : "";
+  $("grid").innerHTML = ""; shown = 0;
+  renderMore();
 }
+// 스크롤이 끝에 가까워지면 자동으로 다음 묶음을 그림
+new IntersectionObserver(es => { if (es[0].isIntersecting && shown < state.results.length) renderMore(); },
+                         { rootMargin: "800px" }).observe($("more"));
+$("more").onclick = renderMore;
 
 // 마우스를 올리면 전체 페이지 이미지를 미리 받아둠 → 클릭 시 즉시 표시
 function prefetch(i) {
   const p = state.results[i]; if (!p || prefetched.has(p.page_key)) return;
-  prefetched.add(p.page_key); const im = new Image(); im.src = `img/pages/${p.page_key}.webp`;
+  prefetched.add(p.page_key); const im = new Image(); im.src = imgUrl("pages", p);
 }
 $("grid").addEventListener("mouseover", e => { const c = e.target.closest(".card"); if (c) prefetch(+c.dataset.i); });
 $("grid").addEventListener("touchstart", e => { const c = e.target.closest(".card"); if (c) prefetch(+c.dataset.i); }, { passive: true });
@@ -157,11 +176,11 @@ function openViewer(i) {
   state.cur = i;
   const t0 = performance.now();
   const img = $("vimg");
-  img.src = `img/thumbs/${p.page_key}.webp`;          // 캐시된 썸네일을 먼저 보여주고
+  img.src = imgUrl("thumbs", p);                       // 캐시된 썸네일을 먼저 보여주고
   const full = new Image();
   full.onload = () => { if (state.cur === i) { img.src = full.src;
     $("vtime").textContent = `페이지 표시: ${((performance.now() - t0) / 1000).toFixed(2)}초`; } };
-  full.src = `img/pages/${p.page_key}.webp`;          // 고해상도로 교체
+  full.src = imgUrl("pages", p);                       // 고해상도로 교체
   $("vtitle").textContent = p.file_name;
   $("vsub").textContent = `${p.path} · ${p.page_no} / ${p.page_count} 페이지`;
   $("vlink").href = p.web_link || "#";
@@ -193,7 +212,7 @@ $("btnIndex").onclick = async () => {
   poll();
 };
 
-let wasRunning = false, folderTouched = false;
+let wasRunning = false, folderTouched = false, lastItems = -1, lastRefresh = 0;
 $("folder").addEventListener("input", () => { folderTouched = true; });
 async function poll() {
   const s = await fetch("/api/status").then(r => r.json());
@@ -215,8 +234,13 @@ async function poll() {
     if (j.incomplete) msg += ` · AI 미완료 파일 ${j.incomplete}개 (한도 도달) → 나중에 "색인 시작"을 다시 누르면 이어서 분석`;
     if (j.errors && j.errors.length) msg += ` · 오류 ${j.errors.length}건: ${j.errors.slice(-1)[0]}`;
   }
+  if (j.ai_error) msg += ` · ⚠️ ${j.ai_error}`;
   $("status").textContent = msg;
-  if (j.running || wasRunning) search();    // 진행 중에도 결과가 점점 채워짐
+  // 진행 중에도 결과가 채워지도록 가끔 새로 고침 — 단, 보고 있는 화면(스크롤·뷰어)은 건드리지 않음
+  const changed = st.items !== lastItems, idle = window.scrollY < 300 && state.cur < 0;
+  if ((j.running && changed && idle && Date.now() - lastRefresh > 10000) || (wasRunning && !j.running)) {
+    lastItems = st.items; lastRefresh = Date.now(); search();
+  }
   wasRunning = j.running;
   if (j.running) setTimeout(poll, 1500);
 }
@@ -227,26 +251,58 @@ $("btnExport").onclick = async () => {
 };
 
 // ── 보기 전용(NAS) 모드: data.json을 받아 브라우저에서 바로 검색 ──
-let DATA = null;
+let DATA = null, TEXT = {};
 function localSearch(q, kind) {
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
   const results = [];
   for (const p of DATA.pages) {
     const items = p.items.filter(it => (!kind || it.kind === kind) &&
-      terms.every(t => it.s.includes(t) || p.t.includes(t)));
+      terms.every(t => it.s.includes(t) || (TEXT[p.page_key] || "").includes(t)));
     if (items.length) results.push({ ...p, items });
   }
   return { results };
 }
+// 압축된 data.json(v2)을 화면에서 쓰는 모양으로 풀기
+function expandData(raw) {
+  if (!raw.files) return raw;      // 예전 형식
+  const pages = raw.pages.map(([k, fi, n, its]) => {
+    const [name, path, link, count, v] = raw.files[fi];
+    return { page_key: k, file_name: name, path, web_link: link, page_count: count, page_no: n, v,
+             items: its.map(([kind, title, d, src]) => ({ kind, title, description: d, keywords: "", source: src,
+                                                         s: (kind + " " + title + " " + d).toLowerCase() })) };
+  });
+  return { meta: raw.meta, pages };
+}
+// text.json 도착 후: 본문 글자·손글씨 전문·키워드를 채워 넣음
+function mergeText(T) {
+  for (const p of DATA.pages) {
+    const e = T[p.page_key]; if (!e) continue;
+    const [body, details] = Array.isArray(e) ? e : [e, []];
+    TEXT[p.page_key] = body || "";
+    p.items.forEach((it, i) => {
+      const [desc, kw] = details[i] || [];
+      if (desc) it.description = desc;
+      if (kw) it.keywords = kw;
+      it.s = [it.kind, it.title, it.description, it.keywords].join(" ").toLowerCase();
+    });
+  }
+}
 async function initStatic() {
-  DATA = await fetch("data.json", { cache: "no-cache" }).then(r => r.json());
+  DATA = expandData(await fetch("data.json", { cache: "no-cache" }).then(r => r.json()));
   $("adminRow").querySelectorAll("input,button").forEach(el => el.remove());
   document.querySelector(".bar").parentElement.querySelector(".bar").remove();
   state.byKind = {};
   DATA.pages.forEach(p => p.items.forEach(it => state.byKind[it.kind] = (state.byKind[it.kind] || 0) + 1));
   renderChips();
-  $("status").textContent = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
+  const head = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
+  $("status").textContent = head + " · 본문 검색 준비 중…";
   search();
+  // 본문(OCR) 글자는 화면을 먼저 띄운 뒤 받아 옴
+  try {
+    mergeText(await fetch(DATA.meta.text || "text.json").then(r => r.json()));
+    $("status").textContent = head;
+    if (state.q) search();
+  } catch (e) { $("status").textContent = head + " · 본문 검색 불가(그림 설명만 검색)"; }
 }
 STATIC_MODE ? initStatic() : poll().then(search);
 </script>

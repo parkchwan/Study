@@ -105,28 +105,54 @@ class ServerBusy(Exception):
     """5xx(서버 과부하) 또는 네트워크 끊김 — 잠시 후 다시 하면 대개 성공."""
 
 
+class Blocked(Exception):
+    """AI가 답을 거부(저작권·안전 필터 등). 다시 보내도 같은 결과라 재시도하지 않음."""
+
+
+BLOCK_REASONS = {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY", "OTHER"}
+_thinking_cfg_ok = True     # 모델이 thinkingConfig를 거부하면 False로 바꾸고 빼고 보냄
+
+
 def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list[dict]:
+    global _thinking_cfg_ok
     model = model or settings.gemini_model
+    gen = {"responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": max_tokens()}
+    if _thinking_cfg_ok:
+        # '생각(thinking)' 토큰은 출력 요금으로 청구되고 답 길이 한도도 잡아먹음 → 최소로
+        gen["thinkingConfig"] = {"thinkingLevel": "minimal"}
     body = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
             {"text": prompt()},
         ]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1,
-                             "maxOutputTokens": max_tokens()},
+        "generationConfig": gen,
     }
     # 키는 주소(URL)가 아니라 헤더로 보냄 → 로그에 키가 찍히지 않음
     r = client.post(f"{GEMINI_BASE}/models/{model}:generateContent",
                     headers={"x-goog-api-key": settings.gemini_api_key}, json=body)
     if r.status_code == 404:
         raise ModelNotFound(model)
+    if r.status_code == 400 and _thinking_cfg_ok and "think" in r.text.lower():
+        _thinking_cfg_ok = False                 # 이 모델은 해당 설정을 지원 안 함 → 빼고 다시
+        return _gemini(client, jpeg, model)
+    if r.status_code in (400, 401) and "api key" in r.text.lower().replace("_", " "):
+        raise QuotaError(f"gemini API 키 오류: {r.text[:200]}", 401)
     if r.status_code in (429, 403):
         raise _quota("gemini", r)
     if r.status_code >= 500:
         raise ServerBusy(f"gemini {r.status_code}")
     r.raise_for_status()
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    return _parse("".join(p.get("text", "") for p in parts))
+    data = r.json()
+    block = (data.get("promptFeedback") or {}).get("blockReason")
+    cands = data.get("candidates") or []
+    if block or not cands:
+        raise Blocked(block or "no candidates")
+    cand = cands[0]
+    parts = (cand.get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    if not text and cand.get("finishReason") in BLOCK_REASONS:
+        raise Blocked(cand["finishReason"])
+    return _parse(text)
 
 
 def _version(name: str) -> tuple:
@@ -194,6 +220,7 @@ class VisionRouter:
         self.gemini_model = settings.gemini_model
         self.model_lock = threading.Lock()
         self.retry_waits = (10, 30, 60)  # 분당 요청 한도(무료 등급) 대비: 기다렸다 재시도
+        self.last_error = ""             # 화면에 보여 줄 마지막 문제 (키 오류, 한도 소진 등)
 
     @property
     def configured(self) -> bool:
@@ -232,13 +259,13 @@ class VisionRouter:
         cap = settings.vision_max_calls
         return cap <= 0 or (self.calls["gemini"] + self.calls["openai"]) < cap
 
-    def describe(self, jpeg: bytes) -> tuple[list[dict], str] | None:
-        """(항목 목록, 사용한 제공자) 반환. AI를 못 쓰면 None."""
+    def describe(self, jpeg: bytes) -> tuple[list[dict] | None, str] | None:
+        """(항목 목록, 사용한 제공자) 반환. AI를 못 쓰면 None. AI가 거부하면 (None, "blocked")."""
         h = hashlib.sha256(jpeg + prompt_version().encode()).hexdigest()
         cached = self.db.cache_get(h)
         if cached is not None:
             self.calls["cache"] += 1
-            return cached["items"], cached.get("provider", "cache")
+            return cached["items"], cached.get("provider", "cache")   # items가 None이면 '거부됨'(로컬로 대체)
         if not self.budget_left():
             return None
         for p in self.providers():
@@ -260,13 +287,22 @@ class VisionRouter:
                         self.sleep(wait)
                         continue
                     log.warning("%s 사용 불가 → 다음 제공자로 전환: %s", p, e)
+                    self.last_error = (f"{p}: API 키가 잘못됐어요 (.env 확인)" if e.status == 401 else
+                                       f"{p}: 사용 한도 소진/권한 없음 → 나머지는 다음 색인 때 이어서")
                     self.disabled.add(p)
                     break
+                except Blocked as e:
+                    # 저작권·안전 필터로 거부 → 다시 보내도 같으므로 결과를 저장해 두고 로컬 분석으로 대체
+                    log.warning("%s 답변 거부(%s) → 이 페이지는 로컬 분석으로 대체", p, e)
+                    self.calls["blocked"] = self.calls.get("blocked", 0) + 1
+                    self.db.cache_put(h, "blocked", {"items": None, "provider": "blocked"})
+                    return None, "blocked"
                 except ModelNotFound as e:
                     # 모델이 없어졌거나 내 키로 못 씀 → 쓸 수 있는 가장 저렴한 모델을 자동으로 찾음
                     if self._switch_gemini_model(str(e)):
                         continue
                     log.warning("사용 가능한 Gemini 모델을 찾지 못함 → Gemini 사용 중지")
+                    self.last_error = "gemini: 사용 가능한 모델이 없어요 (.env의 GEMINI_MODEL 확인)"
                     self.disabled.add(p)
                     break
                 except (ServerBusy, httpx.TransportError) as e:

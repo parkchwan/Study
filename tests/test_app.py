@@ -151,7 +151,7 @@ def test_static_export(env):
     r = export_site(db, out)
     assert r["pages"] == 2
     data = json.loads((out / "data.json").read_text(encoding="utf-8"))
-    assert any("revenue" in it["s"] for p in data["pages"] for it in p["items"])
+    assert any("revenue" in it[1].lower() for p in data["pages"] for it in p[3])
     assert (out / "img" / "pages" / "E_2.webp").exists()
     assert "const STATIC_MODE = true;" in (out / "index.html").read_text(encoding="utf-8")
     db.delete_file("E"); export_site(db, out)      # 삭제된 페이지 이미지는 NAS에서도 정리
@@ -333,3 +333,85 @@ def test_server_busy_and_bad_json_retry(env, monkeypatch):
     r = vision.VisionRouter(db); waits = []; r.sleep = waits.append
     items, prov = r.describe(b"z")
     assert prov == "gemini" and waits == [10] and "gemini" not in r.disabled
+
+
+def test_subfolder_indexing_keeps_other_files(env):
+    tmp, db, job, settings = env
+    from app.drive import LocalFolder
+    root = tmp / "건축시공기술사"; (root / "A").mkdir(parents=True); (root / "B").mkdir()
+    make_pdf(root / "A" / "a.pdf"); make_pdf(root / "B" / "b.pdf")
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    ids_all = db.all_file_ids(); assert len(ids_all) == 2
+    # 하위 폴더만 다시 색인해도 다른 폴더(B) 자료는 지워지지 않고, A는 같은 ID로 '변경 없음' 처리
+    job.start(str(root / "A"), drive_factory=lambda: LocalFolder(root / "A")); job.thread.join(30)
+    assert db.all_file_ids() == ids_all and job.status()["skipped"] == 1
+    # 폴더 안에서 실제로 지운 파일만 정리
+    (root / "B" / "b.pdf").unlink()
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    assert len(db.all_file_ids()) == 1
+
+
+def test_blocked_and_bad_key(env, monkeypatch):
+    import httpx
+    tmp, db, job, settings = env
+    from app import vision
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    calls = []
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, json={"candidates": [{"finishReason": "RECITATION", "content": {"parts": []}}]})
+    r = vision.VisionRouter(db); r.client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert r.describe(b"page") == (None, "blocked")
+    assert r.describe(b"page") == (None, "blocked") and len(calls) == 1       # 거부 결과도 저장 → 재요청 안 함
+    def bad_key(req):
+        return httpx.Response(400, json={"error": {"message": "API key not valid. Please pass a valid API key."}})
+    r2 = vision.VisionRouter(db); r2.client = httpx.Client(transport=httpx.MockTransport(bad_key))
+    assert r2.describe(b"other") is None and "gemini" in r2.disabled and "키" in r2.last_error
+
+
+def test_thinking_config_fallback(monkeypatch):
+    import httpx, json as _j
+    from app import vision, config
+    monkeypatch.setattr(config.settings, "gemini_api_key", "k"); monkeypatch.setattr(vision, "_thinking_cfg_ok", True)
+    bodies = []
+    def handler(req):
+        b = _j.loads(req.content); bodies.append(b)
+        if "thinkingConfig" in b["generationConfig"]:
+            return httpx.Response(400, json={"error": {"message": "thinking_level is not supported"}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"items":[]}'}]}}]})
+    c = httpx.Client(transport=httpx.MockTransport(handler))
+    assert vision._gemini(c, b"i", "m") == [] and len(bodies) == 2
+    vision._gemini(c, b"i", "m"); assert len(bodies) == 3                      # 이후엔 처음부터 빼고 보냄
+
+
+def test_export_splits_text_and_versions_images(env):
+    import json
+    tmp, db, job, settings = env
+    from app.export import export_site
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    job.index_local_file({"file_id": "X", "name": "x.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, pdf, None)
+    out = tmp / "web"; export_site(db, out)
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    text = json.loads((out / "text.json").read_text(encoding="utf-8"))
+    assert all(f[4] for f in data["files"]) and "budget" in text["X_3"][0]
+
+
+def test_db_concurrent_read_write(env):
+    import threading
+    tmp, db, job, settings = env
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    errors = []
+    def writer():
+        try:
+            for i in range(15):
+                job.index_local_file({"file_id": f"W{i}", "name": f"w{i}.pdf", "mime_type": "application/pdf",
+                                      "path": "/", "web_link": "", "version_key": "1"}, pdf, None)
+        except Exception as e: errors.append(e)
+    def reader():
+        try:
+            for _ in range(300): db.search("revenue"); db.stats()
+        except Exception as e: errors.append(e)
+    ts = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(3)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not errors, errors
