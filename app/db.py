@@ -116,7 +116,8 @@ class DB:
 
     # ── vision cache ──
     def cache_get(self, img_hash: str) -> dict | None:
-        row = self.conn.execute("SELECT result_json FROM vision_cache WHERE img_hash=?", (img_hash,)).fetchone()
+        with self.lock:
+            row = self.conn.execute("SELECT result_json FROM vision_cache WHERE img_hash=?", (img_hash,)).fetchone()
         return json.loads(row["result_json"]) if row else None
 
     def cache_put(self, img_hash: str, provider: str, result: dict) -> None:

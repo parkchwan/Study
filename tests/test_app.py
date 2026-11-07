@@ -165,7 +165,7 @@ def test_handwriting(env, monkeypatch):
     doc = fitz.open(); p = doc.new_page(); p.insert_text((72, 72), "printed body")
     p.add_ink_annot([[(100, 100), (150, 130), (200, 110), (250, 160)]])
     t = p.add_text_annot((300, 300), "메모: 피복두께 확인"); doc.save(tmp / "ink.pdf")
-    pages = extract.analyze(tmp / "ink.pdf")
+    pages = list(extract.analyze(tmp / "ink.pdf"))
     assert pages[0].n_ink == 1 and pages[0].has_visual
     assert "피복두께" in pages[0].text                   # 메모 주석은 무료로 검색
     assert any(i["kind"] == "handwriting" for i in pages[0].local_items())
@@ -213,3 +213,32 @@ def test_rate_limit_retry_and_resume(env, monkeypatch):
     job.state = {}
     job.index_local_file(meta, pdf, vision.VisionRouter(db))
     assert db.file_version("B") == "v1"           # 다 분석되면 정상 버전 기록
+
+
+def test_streaming_and_concurrency(env, monkeypatch):
+    import threading, types
+    tmp, db, job, settings = env
+    from app import extract, vision
+    doc = fitz.open()
+    im = Image.new("RGB", (200, 150), (200, 50, 50)); b = io.BytesIO(); im.save(b, "PNG")
+    for i in range(40):                          # 스캔본처럼 모든 페이지에 큰 그림
+        p = doc.new_page(); p.insert_image(fitz.Rect(50, 50, 550, 750), stream=b.getvalue())
+        p.insert_text((60, 780), f"page {i+1}")
+    doc.save(tmp / "scan.pdf")
+    assert isinstance(extract.analyze(tmp / "scan.pdf"), types.GeneratorType)   # 한 페이지씩
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    monkeypatch.setattr(settings, "vision_concurrency", 4); monkeypatch.setattr(settings, "vision_max_calls", 0)
+    active, peak, lock = [0], [0], threading.Lock()
+    def gem(c, j):
+        import time
+        with lock: active[0] += 1; peak[0] = max(peak[0], active[0])
+        time.sleep(0.3)
+        with lock: active[0] -= 1
+        return [{"kind": "figure", "title": "fig", "description": "", "keywords": []}]
+    monkeypatch.setattr(vision, "_gemini", gem)
+    n = job.index_local_file({"file_id": "S", "name": "scan.pdf", "mime_type": "application/pdf", "path": "/",
+                              "web_link": "", "version_key": "1"}, tmp / "scan.pdf", vision.VisionRouter(db))
+    assert n == 40 and db.stats()["pages"] == 40
+    assert 1 < peak[0] <= 4                       # 동시에 여러 장, 단 설정값 이하
+    assert job.state["page"] == 40 and job.state["pages"] == 40
+    assert db.search("page 17")[0]["page_no"] == 17

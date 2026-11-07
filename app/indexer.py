@@ -54,7 +54,7 @@ class IndexJob:
                 self.db.delete_file(gone)
 
             for meta in files:
-                st["current"] = f"{meta['path']}/{meta['name']}"
+                st["current"] = f"{meta['path'].rstrip('/')}/{meta['name']}"
                 if self.db.file_version(meta["file_id"]) == meta["version_key"] and meta["version_key"]:
                     st["skipped"] += 1          # 변경 없음 → 다운로드/AI 모두 생략
                     st["done"] += 1
@@ -85,20 +85,28 @@ class IndexJob:
             st["finished"] = time.time()
 
     def index_local_file(self, meta: dict, local: Path, router: VisionRouter | None) -> int:
-        """로컬 파일 하나를 분석·렌더·저장. 저장된 항목 수 반환."""
-        pages_out = []
-        n_items = 0
-        incomplete = False      # AI 분석을 못 한 페이지가 있으면 다음 색인 때 다시 시도
-        for pi in extract.analyze(local, dpi=settings.page_dpi):
+        """로컬 파일 하나를 분석·렌더·저장. 저장된 항목 수 반환.
+
+        - 페이지를 하나씩 읽어 메모리를 적게 씀 (수백 MB 스캔 교재 대응)
+        - AI 호출은 VISION_CONCURRENCY 개씩 동시에 보내 속도 향상
+        """
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+
+        st = self.state
+        st["page"], st["pages"] = 0, (extract.count_pages(local) if local.suffix.lower() == ".pdf" else 0)
+        use_ai = router is not None and router.configured
+        conc = settings.vision_concurrency if use_ai else 1
+        out = {"pages": [], "items": 0, "incomplete": False}
+
+        def finish(pi, wants_ai, fut):
             key = f"{meta['file_id']}_{pi.page_no}"
             items: list[dict] = []
-            wants_ai = pi.has_visual and router is not None and router.configured
             if wants_ai:
-                res = router.describe(extract.shrink_for_ai(pi.page_png, settings.ai_image_px)) \
-                    if router.enabled else None
+                res = fut.result() if fut is not None else None
                 if res is None:
-                    incomplete = True
-                if res is not None:
+                    out["incomplete"] = True      # AI 분석 못 함 → 다음 색인 때 다시 시도
+                else:
                     ai_items, provider = res
                     items = [dict(it, source=provider) for it in ai_items]
                     # 로컬 캡션은 정확한 제목이므로 AI 결과에 덧붙여 보존
@@ -106,24 +114,38 @@ class IndexJob:
                     items += [dict(c, source="local") for c in pi.captions if c["title"] not in titles]
             if not items and pi.has_visual:
                 items = pi.local_items()
+            st["page"] = pi.page_no
             if not items:
-                continue    # 시각 요소 없는 페이지는 색인·렌더 생략 (저장공간/시간 절약)
+                return      # 시각 요소 없는 페이지는 색인·렌더 생략 (저장공간/시간 절약)
             extract.save_renders(pi.page_png, settings.pages_dir / f"{key}.webp",
                                  settings.thumbs_dir / f"{key}.webp", settings.thumb_px)
-            pages_out.append({"page_key": key, "page_no": pi.page_no, "width": pi.width, "height": pi.height,
-                              "text": pi.text, "items": items})
-            n_items += len(items)
+            out["pages"].append({"page_key": key, "page_no": pi.page_no, "width": pi.width,
+                                 "height": pi.height, "text": pi.text, "items": items})
+            out["items"] += len(items)
+
+        pending: deque = deque()
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            for pi in extract.analyze(local, dpi=settings.page_dpi):
+                wants_ai = pi.has_visual and use_ai
+                fut = None
+                if wants_ai and router.enabled:
+                    fut = ex.submit(router.describe, extract.shrink_for_ai(pi.page_png, settings.ai_image_px))
+                pending.append((pi, wants_ai, fut))
+                while len(pending) > conc * 2:       # 메모리에 올려 둔 페이지 수 제한
+                    finish(*pending.popleft())
+            while pending:
+                finish(*pending.popleft())
+
         meta = dict(meta)
-        if incomplete:
+        if out["incomplete"]:
             # 버전을 비워 두면 다음 색인 때 이 파일을 다시 처리 (이미 분석된 페이지는 캐시라 추가 비용 없음)
             meta["version_key"] = ""
-            self.state.setdefault("incomplete", 0)
-            self.state["incomplete"] = self.state.get("incomplete", 0) + 1
-        self.db.save_file(meta, pages_out)
+            st["incomplete"] = st.get("incomplete", 0) + 1
+        self.db.save_file(meta, out["pages"])
         # 원본 캐시 파일은 렌더 후 삭제해 디스크 절약
         try:
             if local.parent == settings.cache_dir:
                 local.unlink()
         except OSError:
             pass
-        return n_items
+        return out["items"]

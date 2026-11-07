@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 import pymupdf as fitz
 from PIL import Image
@@ -92,8 +93,10 @@ def _captions(text: str) -> list[dict]:
     return out
 
 
-def analyze(path: Path, dpi: int = 110) -> list[PageInfo]:
-    """파일(PDF/이미지/Office)을 열어 페이지별 정보를 반환."""
+def analyze(path: Path, dpi: int = 110) -> Iterator[PageInfo]:
+    """파일(PDF/이미지/Office)을 열어 페이지를 하나씩 돌려줌.
+
+    수백 MB 스캔 교재도 메모리에 한 페이지씩만 올리도록 제너레이터로 동작."""
     suffix = path.suffix.lower()
     if suffix in {".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}:
         path = to_pdf(path)
@@ -101,11 +104,21 @@ def analyze(path: Path, dpi: int = 110) -> list[PageInfo]:
 
     if suffix != ".pdf":
         try:
-            return [_analyze_image(path)]
+            return iter([_analyze_image(path)])
         except Exception:
             pass  # 이미지가 아니면 PyMuPDF로 열어봄
+    return _iter_pdf(path, dpi)
 
-    pages: list[PageInfo] = []
+
+def count_pages(path: Path) -> int:
+    try:
+        with fitz.open(path) as doc:
+            return doc.page_count
+    except Exception:
+        return 1
+
+
+def _iter_pdf(path: Path, dpi: int) -> Iterator[PageInfo]:
     with fitz.open(path) as doc:
         for i, page in enumerate(doc):
             area = page.rect.width * page.rect.height or 1
@@ -131,12 +144,11 @@ def analyze(path: Path, dpi: int = 110) -> list[PageInfo]:
                     page_notes.append(annot.info["content"])
             text = (page.get_text("text") or "") + ("\n" + "\n".join(page_notes) if page_notes else "")
             pix = page.get_pixmap(dpi=dpi)
-            pages.append(PageInfo(
+            yield PageInfo(
                 page_no=i + 1, width=pix.width, height=pix.height, text=text.strip(),
                 page_png=pix.tobytes("png"), n_images=n_images, n_drawings=n_drawings,
                 n_tables=n_tables, n_ink=n_ink, captions=_captions(text),
-            ))
-    return pages
+            )
 
 
 def _analyze_image(path: Path) -> PageInfo:

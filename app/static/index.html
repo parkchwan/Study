@@ -205,7 +205,7 @@ async function poll() {
     const pct = j.total ? Math.round(j.done / j.total * 100) : 0;
     $("bar").style.width = pct + "%";
     const c = j.ai_calls || {};
-    msg = `${j.phase} ${j.done}/${j.total} (${pct}%) · 변경없음 생략 ${j.skipped} · Gemini ${c.gemini || 0} / OpenAI ${c.openai || 0} / 캐시 ${c.cache || 0} · ${j.current || ""}`;
+    msg = `${j.phase} ${j.done}/${j.total} (${pct}%) · 변경없음 생략 ${j.skipped} · Gemini ${c.gemini || 0} / OpenAI ${c.openai || 0} / 캐시 ${c.cache || 0} · ${j.current || ""}${j.page ? ` (${j.page}${j.pages ? "/" + j.pages : ""}쪽)` : ""}`;
     $("btnIndex").disabled = true;
   } else {
     $("bar").style.width = j.phase ? "100%" : "0";

@@ -35,6 +35,8 @@ class Settings:
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4.1-nano"))
     vision_max_calls: int = field(default_factory=lambda: _int("VISION_MAX_CALLS", 500))
     vision_image_px: int = field(default_factory=lambda: _int("VISION_IMAGE_PX", 768))
+    # 동시에 AI로 보내는 페이지 수 (유료 등급이면 8까지 올리면 빨라짐, 무료 등급은 2~4 권장)
+    vision_concurrency: int = field(default_factory=lambda: max(1, _int("VISION_CONCURRENCY", 3)))
     # 필기 인식: 손글씨를 받아 적어 검색 가능하게 함 (on/off). 켜면 이미지를 조금 더 크게 보냄
     handwriting: bool = field(default_factory=lambda: os.getenv("HANDWRITING", "on").lower() in ("on", "1", "true", "yes"))
     handwriting_image_px: int = field(default_factory=lambda: _int("HANDWRITING_IMAGE_PX", 1280))
