@@ -4,6 +4,18 @@ Google Drive의 **특정 폴더**를 지정하면, 그 폴더(하위 폴더 포�
 **그림 · 표 · 플로우차트 · 차트 · 다이어그램 · 사진 · 스크린샷**을 찾아 색인하고,
 검색 결과를 누르면 해당 **페이지를 2초 안에(보통 0.1초 이내)** 띄워 주는 웹 앱입니다.
 
+## ⚡ 가장 쉬운 시작 (Google Cloud 설정 불필요)
+1. **PC용 Google Drive** 설치·로그인: https://www.google.com/drive/download/
+   → 탐색기에 `G:\내 드라이브` 같은 드라이브가 생깁니다.
+2. Python 3.10+ 설치 (Windows: "Add Python to PATH" 체크)
+3. 이 저장소를 받아서(초록색 **Code → Download ZIP** 후 압축 해제) **`start.bat` 더블클릭** (Mac: `start.sh`)
+4. 메모장이 열리면 `GEMINI_API_KEY=` 뒤에 키 붙여넣고 저장 → 창 닫기
+   (키 발급: https://aistudio.google.com/apikey , 선택으로 `OPENAI_API_KEY`도)
+5. 브라우저가 열리면 폴더 칸에 **PC 경로**를 입력 (예: `G:\내 드라이브\건축시공기술사`) → **색인 시작**
+
+> 로컬 모드에서는 PDF·이미지·Office 파일을 처리합니다. Google 문서/슬라이드 원본(.gdoc/.gslides)은
+> 동기화 폴더에 바로가기로만 존재하므로, 필요하면 PDF로 저장해 두거나 아래 "Drive API 모드"를 쓰세요.
+
 ## 지원 파일
 - PDF, 이미지(PNG/JPG/GIF/WebP 등)
 - Google 문서 / 슬라이드 / 스프레드시트 / 드로잉 (PDF로 내보내 처리)
@@ -39,7 +51,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 브라우저에서 http://localhost:8000 → 폴더 URL 붙여넣기 → **색인 시작**.
 진행 중에도 결과가 점점 채워지고, 상단에 Gemini/OpenAI/캐시 호출 수가 표시됩니다.
 
-### 1) Google Drive 인증 (둘 중 하나)
+### 1) (Drive API 모드) Google Drive 인증 — 폴더 URL로 색인할 때만 필요
 - **서비스 계정(권장)**: Google Cloud 콘솔 → Drive API 사용 설정 → 서비스 계정 생성 → JSON 키를
   `service_account.json`으로 저장 → 색인할 Drive 폴더를 서비스 계정 이메일(`...@...iam.gserviceaccount.com`)과 **공유**(뷰어 권한).
 - **OAuth**: OAuth 클라이언트(데스크톱 앱) JSON을 `credentials.json`으로 저장하고 `.env`에

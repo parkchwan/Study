@@ -124,3 +124,45 @@ class Drive:
             _, done = dl.next_chunk()
         buf.close()
         return dest
+
+
+# ── 로컬 폴더 모드: "PC용 Google Drive"로 동기화된 폴더를 직접 읽음 (Google Cloud 설정 불필요) ──
+LOCAL_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff",
+              ".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
+
+
+def local_dir(value: str) -> Path | None:
+    """입력값이 내 컴퓨터의 폴더 경로면 Path 반환."""
+    v = value.strip().strip('"')
+    if not v or v.startswith("http"):
+        return None
+    p = Path(v).expanduser()
+    return p if p.is_dir() else None
+
+
+class LocalFolder:
+    def __init__(self, root: Path):
+        self.root = Path(root)
+
+    def folder_name(self, _folder_id: str) -> str:
+        return self.root.name
+
+    def walk(self, _folder_id: str) -> Iterator[dict]:
+        import hashlib
+        for p in sorted(self.root.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in LOCAL_EXTS or p.name.startswith(("~$", ".")):
+                continue
+            st = p.stat()
+            rel = p.relative_to(self.root)
+            yield {
+                "file_id": "L" + hashlib.sha1(str(rel).encode()).hexdigest()[:20],
+                "name": p.name,
+                "mime_type": "local" + p.suffix.lower(),
+                "path": "/" + str(rel.parent).replace("\\", "/") if str(rel.parent) != "." else "/",
+                "web_link": "",
+                "version_key": f"{st.st_size}-{int(st.st_mtime)}",
+                "_local": str(p),
+            }
+
+    def fetch(self, meta: dict, _dest_dir: Path) -> Path:
+        return Path(meta["_local"])       # 원본을 그대로 읽음 (복사·삭제 안 함)

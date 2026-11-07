@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from .config import settings
 from .db import DB
-from .drive import parse_folder_id
+from .drive import LocalFolder, local_dir, parse_folder_id
 from .indexer import IndexJob
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -45,10 +45,14 @@ def index():
 
 @app.post("/api/index")
 def start_index(req: IndexReq):
-    folder_id = parse_folder_id(req.folder)
+    local = local_dir(req.folder)
+    if local:   # 내 컴퓨터 폴더 (PC용 Google Drive 동기화 폴더 등)
+        folder_id, factory = str(local), (lambda: LocalFolder(local))
+    else:
+        folder_id, factory = parse_folder_id(req.folder), None
     if not folder_id:
-        raise HTTPException(400, "폴더 ID 또는 URL을 입력하세요.")
-    if not job.start(folder_id):
+        raise HTTPException(400, "폴더 ID, URL 또는 내 컴퓨터 폴더 경로를 입력하세요.")
+    if not job.start(folder_id, drive_factory=factory):
         raise HTTPException(409, "이미 색인 작업이 진행 중입니다.")
     return {"ok": True, "folder_id": folder_id}
 

@@ -124,3 +124,16 @@ def test_api(env, monkeypatch):
     img = c.get("/img/pages/Z_2.webp")
     assert img.status_code == 200 and "immutable" in img.headers["cache-control"]
     assert c.get("/api/page/Z_2").json()["page_no"] == 2
+
+
+def test_local_folder_mode(env):
+    tmp, db, job, settings = env
+    from app.drive import LocalFolder, local_dir
+    root = tmp / "내 드라이브" / "건축"; (root / "sub").mkdir(parents=True)
+    make_pdf(root / "sub" / "a.pdf"); (root / "note.txt").write_text("x")
+    assert local_dir(str(root)) == root and local_dir("https://drive.google.com/x") is None
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    s = job.status()
+    assert s["phase"] == "완료" and s["total"] == 1, s
+    assert (root / "sub" / "a.pdf").exists()        # 원본은 절대 삭제하지 않음
+    assert db.search("budget")[0]["path"] == "/sub"
