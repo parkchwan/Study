@@ -69,6 +69,9 @@ class DB:
         return row["v"] if row else default
 
     # ── files ──
+    def page_keys(self, file_id: str) -> set[str]:
+        return {r["page_key"] for r in self.conn.execute("SELECT page_key FROM pages WHERE file_id=?", (file_id,))}
+
     def file_version(self, file_id: str) -> str | None:
         row = self.conn.execute("SELECT version_key FROM files WHERE file_id=?", (file_id,)).fetchone()
         return row["version_key"] if row else None

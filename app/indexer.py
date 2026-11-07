@@ -10,7 +10,7 @@ from pathlib import Path
 from . import extract
 from .config import settings
 from .db import DB
-from .vision import VisionRouter
+from .vision import VisionRouter, analysis_signature
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +51,13 @@ class IndexJob:
 
             live_ids = {f["file_id"] for f in files}
             for gone in self.db.all_file_ids() - live_ids:      # 폴더에서 사라진 파일 제거
+                self._remove_renders(self.db.page_keys(gone))
                 self.db.delete_file(gone)
 
             for meta in files:
                 st["current"] = f"{meta['path'].rstrip('/')}/{meta['name']}"
-                if self.db.file_version(meta["file_id"]) == meta["version_key"] and meta["version_key"]:
+                expected = f"{meta['version_key']}|{analysis_signature()}"
+                if meta["version_key"] and self.db.file_version(meta["file_id"]) == expected:
                     st["skipped"] += 1          # 변경 없음 → 다운로드/AI 모두 생략
                     st["done"] += 1
                     continue
@@ -84,6 +86,15 @@ class IndexJob:
         finally:
             st["running"] = False
             st["finished"] = time.time()
+
+    @staticmethod
+    def _remove_renders(keys: set[str]) -> None:
+        for k in keys:
+            for d in (settings.pages_dir, settings.thumbs_dir):
+                try:
+                    (d / f"{k}.webp").unlink()
+                except OSError:
+                    pass
 
     def index_local_file(self, meta: dict, local: Path, router: VisionRouter | None) -> int:
         """로컬 파일 하나를 분석·렌더·저장. 저장된 항목 수 반환.
@@ -144,6 +155,10 @@ class IndexJob:
             # 버전을 비워 두면 다음 색인 때 이 파일을 다시 처리 (이미 분석된 페이지는 캐시라 추가 비용 없음)
             meta["version_key"] = ""
             st["incomplete"] = st.get("incomplete", 0) + 1
+        elif meta.get("version_key"):
+            meta["version_key"] = f"{meta['version_key']}|{analysis_signature()}"
+        # 이번에 색인되지 않은 예전 페이지 이미지는 삭제 (로고·빈 양식 등 잘못 잡혔던 페이지 정리)
+        self._remove_renders(self.db.page_keys(meta["file_id"]) - {p["page_key"] for p in out["pages"]})
         self.db.save_file(meta, out["pages"])
         # 원본 캐시 파일은 렌더 후 삭제해 디스크 절약
         try:

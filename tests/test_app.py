@@ -212,7 +212,7 @@ def test_rate_limit_retry_and_resume(env, monkeypatch):
     monkeypatch.setattr(settings, "vision_max_calls", 0)
     job.state = {}
     job.index_local_file(meta, pdf, vision.VisionRouter(db))
-    assert db.file_version("B") == "v1"           # 다 분석되면 정상 버전 기록
+    assert db.file_version("B").startswith("v1|")  # 다 분석되면 정상 버전 기록
 
 
 def test_streaming_and_concurrency(env, monkeypatch):
@@ -292,3 +292,28 @@ def test_ai_says_nothing_means_nothing(env, monkeypatch):
                               "web_link": "", "version_key": "1"}, tmp / "blank.pdf", vision.VisionRouter(db))
     assert n == 0 and db.stats()["pages"] == 0   # 로컬 '벡터 도형' 추정으로 채우지 않음
     assert "로고" in vision.prompt()
+
+
+def test_reanalyze_when_prompt_changes_and_cleanup(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    src = tmp / "src.pdf"; make_pdf(src)
+    class FakeDrive:
+        def folder_name(self, fid): return "f"
+        def walk(self, fid):
+            yield {"file_id": "R", "name": "r.pdf", "mime_type": "application/pdf", "path": "/", "web_link": "", "version_key": "1"}
+        def fetch(self, meta, d):
+            out = d / "R.pdf"; out.write_bytes(src.read_bytes()); return out
+    job.start("F", drive_factory=FakeDrive); job.thread.join(30)
+    assert (settings.pages_dir / "R_2.webp").exists()
+    job.start("F", drive_factory=FakeDrive); job.thread.join(30)
+    assert job.status()["skipped"] == 1
+    # AI 키를 넣는(=분석 방식이 바뀐) 경우 → 같은 파일도 다시 분석, AI가 '없음'이라 한 페이지 이미지는 삭제
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    monkeypatch.setattr(vision, "_gemini", lambda c, j, model=None: [])
+    job.start("F", drive_factory=FakeDrive); job.thread.join(30)
+    assert job.status()["skipped"] == 0
+    keys = db.page_keys("R")
+    assert "R_2" in keys                              # 캡션(Figure 1.)이 있어 남음
+    for k in {"R_2", "R_3"} - keys:
+        assert not (settings.pages_dir / f"{k}.webp").exists()

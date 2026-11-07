@@ -49,6 +49,13 @@ def prompt_version() -> str:
     return "v3-hw" if settings.handwriting else "v3"
 
 
+def analysis_signature() -> str:
+    """분석 방식 식별자. 이게 바뀌면(AI 지시 변경, 키 추가 등) 이미 색인한 파일도 다시 분석."""
+    ai = (settings.vision_provider in ("auto", "gemini") and settings.gemini_api_key) or \
+         (settings.vision_provider in ("auto", "openai") and settings.openai_api_key)
+    return prompt_version() if ai else "local"
+
+
 def max_tokens() -> int:
     return 2500 if settings.handwriting else 800
 
