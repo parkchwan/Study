@@ -16,6 +16,9 @@ from .export import export_site
 from .indexer import IndexJob
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# 외부 요청 주소를 일일이 찍지 않음 (화면이 덜 지저분하고, 주소에 민감정보가 섞일 위험 차단)
+for noisy in ("httpx", "httpcore", "googleapiclient.discovery"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 settings.ensure_dirs()
 
 app = FastAPI(title="Drive Visual Index")

@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import logging
+import threading
 import time
 
 import httpx
@@ -84,8 +85,15 @@ def _parse(text: str) -> list[dict]:
     return items
 
 
-def _gemini(client: httpx.Client, jpeg: bytes) -> list[dict]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent"
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+class ModelNotFound(Exception):
+    pass
+
+
+def _gemini(client: httpx.Client, jpeg: bytes, model: str | None = None) -> list[dict]:
+    model = model or settings.gemini_model
     body = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
@@ -94,12 +102,48 @@ def _gemini(client: httpx.Client, jpeg: bytes) -> list[dict]:
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1,
                              "maxOutputTokens": max_tokens()},
     }
-    r = client.post(url, params={"key": settings.gemini_api_key}, json=body)
+    # 키는 주소(URL)가 아니라 헤더로 보냄 → 로그에 키가 찍히지 않음
+    r = client.post(f"{GEMINI_BASE}/models/{model}:generateContent",
+                    headers={"x-goog-api-key": settings.gemini_api_key}, json=body)
+    if r.status_code == 404:
+        raise ModelNotFound(model)
     if r.status_code in (429, 403):
         raise _quota("gemini", r)
     r.raise_for_status()
     parts = r.json()["candidates"][0]["content"]["parts"]
     return _parse("".join(p.get("text", "") for p in parts))
+
+
+def _version(name: str) -> tuple:
+    import re
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    return (float(m.group(1)),) if m else (0.0,)
+
+
+def pick_gemini_model(names: list[str]) -> str | None:
+    """사용 가능한 모델 중 가장 저렴한 계열(최신 Flash-Lite → Flash)을 고름."""
+    import re
+    clean = [n.removeprefix("models/") for n in names]
+    clean = [n for n in clean if not re.search(r"preview|exp|tts|image|live|audio|embedding|thinking", n)]
+    for family in (r"^gemini-[\d.]+-flash-lite(-latest|-\d+)?$", r"^gemini-[\d.]+-flash(-latest|-\d+)?$"):
+        cands = [n for n in clean if re.match(family, n)]
+        if cands:
+            return max(cands, key=lambda n: (_version(n), n.endswith("latest") is False, n))
+    return None
+
+
+def list_gemini_models(client: httpx.Client) -> list[str]:
+    names, token = [], None
+    while True:
+        r = client.get(f"{GEMINI_BASE}/models", headers={"x-goog-api-key": settings.gemini_api_key},
+                       params={"pageSize": 1000, **({"pageToken": token} if token else {})})
+        r.raise_for_status()
+        data = r.json()
+        names += [m["name"] for m in data.get("models", [])
+                  if "generateContent" in m.get("supportedGenerationMethods", [])]
+        token = data.get("nextPageToken")
+        if not token:
+            return names
 
 
 def _openai(client: httpx.Client, jpeg: bytes) -> list[dict]:
@@ -130,6 +174,8 @@ class VisionRouter:
         self.client = httpx.Client(timeout=60)
         self.disabled: set[str] = set()
         self.sleep = time.sleep          # 테스트에서 교체 가능
+        self.gemini_model = settings.gemini_model
+        self.model_lock = threading.Lock()
         self.retry_waits = (10, 30, 60)  # 분당 요청 한도(무료 등급) 대비: 기다렸다 재시도
 
     @property
@@ -149,6 +195,22 @@ class VisionRouter:
     def enabled(self) -> bool:
         return bool(self.providers())
 
+    def _switch_gemini_model(self, missing: str) -> bool:
+        with self.model_lock:
+            if self.gemini_model != missing:      # 다른 스레드가 이미 바꿈
+                return True
+            try:
+                new = pick_gemini_model(list_gemini_models(self.client))
+            except Exception as e:
+                log.warning("Gemini 모델 목록 조회 실패: %s", e)
+                return False
+            if not new or new == missing:
+                return False
+            log.warning("Gemini 모델 '%s' 사용 불가 → '%s'로 자동 전환 (.env의 GEMINI_MODEL도 바꿔 두세요)",
+                        missing, new)
+            self.gemini_model = new
+            return True
+
     def budget_left(self) -> bool:
         cap = settings.vision_max_calls
         return cap <= 0 or (self.calls["gemini"] + self.calls["openai"]) < cap
@@ -163,10 +225,12 @@ class VisionRouter:
         if not self.budget_left():
             return None
         for p in self.providers():
-            fn = _gemini if p == "gemini" else _openai
             for attempt in range(len(self.retry_waits) + 1):
                 try:
-                    items = fn(self.client, jpeg)
+                    if p == "gemini":
+                        items = _gemini(self.client, jpeg, self.gemini_model)
+                    else:
+                        items = _openai(self.client, jpeg)
                     self.calls[p] += 1
                     self.db.cache_put(h, p, {"items": items, "provider": p})
                     return items, p
@@ -178,6 +242,13 @@ class VisionRouter:
                         self.sleep(wait)
                         continue
                     log.warning("%s 사용 불가 → 다음 제공자로 전환: %s", p, e)
+                    self.disabled.add(p)
+                    break
+                except ModelNotFound as e:
+                    # 모델이 없어졌거나 내 키로 못 씀 → 쓸 수 있는 가장 저렴한 모델을 자동으로 찾음
+                    if self._switch_gemini_model(str(e)):
+                        continue
+                    log.warning("사용 가능한 Gemini 모델을 찾지 못함 → Gemini 사용 중지")
                     self.disabled.add(p)
                     break
                 except Exception as e:  # 네트워크/파싱 오류: 이번 페이지만 다음 제공자로

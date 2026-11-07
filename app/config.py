@@ -30,7 +30,7 @@ class Settings:
 
     vision_provider: str = field(default_factory=lambda: os.getenv("VISION_PROVIDER", "auto").lower())
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4.1-nano"))
     vision_max_calls: int = field(default_factory=lambda: _int("VISION_MAX_CALLS", 500))

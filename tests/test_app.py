@@ -73,7 +73,7 @@ def test_vision_router_fallback_and_cache(env, monkeypatch):
     monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "openai_api_key", "o")
     monkeypatch.setattr(settings, "vision_provider", "auto")
     calls = []
-    def gem(c, j): calls.append("gemini"); raise vision.QuotaError("429")
+    def gem(c, j, model=None): calls.append("gemini"); raise vision.QuotaError("429")
     def oai(c, j): calls.append("openai"); return [{"kind": "flowchart", "title": "결재 흐름", "description": "승인 절차", "keywords": ["결재"]}]
     monkeypatch.setattr(vision, "_gemini", gem); monkeypatch.setattr(vision, "_openai", oai)
     r = vision.VisionRouter(db); r.sleep = lambda s: None
@@ -174,7 +174,7 @@ def test_handwriting(env, monkeypatch):
     monkeypatch.setattr(settings, "handwriting", True)
     monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
     seen = {}
-    def gem(c, j):
+    def gem(c, j, model=None):
         seen["prompt"] = vision.prompt()
         return [{"kind": "handwriting", "title": "철근 필기", "description": "철근 콘크리트 피복두께 40mm 이상", "keywords": []}]
     monkeypatch.setattr(vision, "_gemini", gem)
@@ -193,7 +193,7 @@ def test_rate_limit_retry_and_resume(env, monkeypatch):
     monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr(settings, "vision_provider", "auto")
     n = {"c": 0}
-    def gem(c, j):
+    def gem(c, j, model=None):
         n["c"] += 1
         if n["c"] <= 2: raise vision.QuotaError("429", 429)
         return [{"kind": "figure", "title": "ok", "description": "", "keywords": []}]
@@ -229,7 +229,7 @@ def test_streaming_and_concurrency(env, monkeypatch):
     monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
     monkeypatch.setattr(settings, "vision_concurrency", 4); monkeypatch.setattr(settings, "vision_max_calls", 0)
     active, peak, lock = [0], [0], threading.Lock()
-    def gem(c, j):
+    def gem(c, j, model=None):
         import time
         with lock: active[0] += 1; peak[0] = max(peak[0], active[0])
         time.sleep(0.3)
@@ -242,3 +242,38 @@ def test_streaming_and_concurrency(env, monkeypatch):
     assert 1 < peak[0] <= 4                       # 동시에 여러 장, 단 설정값 이하
     assert job.state["page"] == 40 and job.state["pages"] == 40
     assert db.search("page 17")[0]["page_no"] == 17
+
+
+def test_gemini_model_auto_switch(env, monkeypatch):
+    tmp, db, job, settings = env
+    from app import vision
+    assert vision.pick_gemini_model(["models/gemini-2.5-flash", "models/gemini-3.5-flash-lite",
+                                     "models/gemini-3.5-flash-lite-preview-06", "models/gemini-3.8-flash",
+                                     "models/gemini-3.5-flash-lite-tts"]) == "gemini-3.5-flash-lite"
+    assert vision.pick_gemini_model(["models/gemini-3.8-flash", "models/gemma-4"]) == "gemini-3.8-flash"
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.5-flash-lite")
+    used = []
+    def gem(c, j, model=None):
+        used.append(model)
+        if model == "gemini-2.5-flash-lite": raise vision.ModelNotFound(model)
+        return [{"kind": "figure", "title": "ok", "description": "", "keywords": []}]
+    monkeypatch.setattr(vision, "_gemini", gem)
+    monkeypatch.setattr(vision, "list_gemini_models", lambda c: ["models/gemini-3.5-flash-lite", "models/gemini-3.8-flash"])
+    r = vision.VisionRouter(db)
+    items, prov = r.describe(b"x")
+    assert prov == "gemini" and used == ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite"]
+    r.describe(b"y"); assert used[-1] == "gemini-3.5-flash-lite"      # 이후엔 바뀐 모델로 바로
+
+
+def test_gemini_key_not_in_url(monkeypatch):
+    import httpx
+    from app import vision, config
+    monkeypatch.setattr(config.settings, "gemini_api_key", "SECRET123")
+    seen = {}
+    def handler(req):
+        seen["url"] = str(req.url); seen["hdr"] = req.headers.get("x-goog-api-key")
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"items":[]}'}]}}]})
+    c = httpx.Client(transport=httpx.MockTransport(handler))
+    assert vision._gemini(c, b"img", "gemini-3.5-flash-lite") == []
+    assert "SECRET123" not in seen["url"] and seen["hdr"] == "SECRET123"

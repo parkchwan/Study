@@ -67,6 +67,7 @@ class IndexJob:
                     st["errors"].append(f"{meta['name']}: {e}")
                 st["done"] += 1
                 st["ai_calls"] = dict(router.calls)
+                st["gemini_model"] = router.gemini_model
             st["ai_calls"] = dict(router.calls)
             if settings.export_dir:            # NAS 보기 전용 사이트 자동 갱신
                 st["phase"] = "NAS로 내보내는 중"
