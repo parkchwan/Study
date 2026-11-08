@@ -523,26 +523,57 @@ function rerankPrompt(q, cands) {   // app/rerank.py 와 같은 내용
     + "단어만 겹치고 주제가 다른 페이지는 빼라. JSON {\"order\":[번호...]}.\n"
     + `질문: ${q}\n후보:\n` + cands.map((c, i) => `[${i}] ${c}`).join("\n");
 }
+let rrError = "";
+// 한 모델이 사용 한도(429)·없음(404)·과부하(503)면 같은 계열의 다른 모델로 바꿔 시도 (모델마다 한도가 따로)
+async function rerankModels(key, first) {
+  let saved = ""; try { saved = localStorage.getItem("rr_model") || ""; } catch (e) {}
+  const list = [saved, first].filter(Boolean);
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", { headers: { "x-goog-api-key": key } });
+    if (r.ok) {
+      const names = ((await r.json()).models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => m.name.replace(/^models\//, ""))
+        .filter(n => /^gemini-[\d.]+-flash(-lite)?(-latest|-\d+)?$/.test(n));
+      const ver = n => parseFloat((n.match(/gemini-([\d.]+)/) || [0, 0])[1]);
+      const lite = names.filter(n => n.includes("lite")).sort((a, b) => ver(b) - ver(a));
+      const flash = names.filter(n => !n.includes("lite")).sort((a, b) => ver(b) - ver(a));
+      list.push(...lite, ...flash);
+    }
+  } catch (e) {}
+  return [...new Set(list)].slice(0, 4);
+}
 async function callRerank(q, texts) {
-  const ai = DATA.meta.ai;
+  const ai = DATA.meta.ai; rrError = "";
   if (ai.rerank) {
     const r = await fetch(ai.rerank, { method: "POST", headers: { "Content-Type": "application/json" },
                                        body: JSON.stringify({ q, cands: texts }) });
-    return r.ok ? (await r.json()).order : null;
+    if (!r.ok) { try { rrError = (await r.json()).detail || ""; } catch (e) {} return null; }
+    return (await r.json()).order;
   }
   const key = getKey(); if (!key) return null;
-  const gen = { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: 300,
-    responseSchema: { type: "OBJECT", properties: { order: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["order"] },
-    thinkingConfig: { thinkingLevel: "minimal" } };
-  for (let t = 0; t < 2; t++) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ai.model}:generateContent`, {
-      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents: [{ parts: [{ text: rerankPrompt(q, texts) }] }], generationConfig: gen }) });
-    if (r.status === 400 && gen.thinkingConfig) { delete gen.thinkingConfig; continue; }
-    if (!r.ok) return null;
-    const parts = ((await r.json()).candidates || [{}])[0].content?.parts || [];
-    const txt = parts.filter(x => !x.thought).map(x => x.text || "").join("");
-    try { return JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1)).order; } catch (e) { return null; }
+  const body = gen => JSON.stringify({ contents: [{ parts: [{ text: rerankPrompt(q, texts) }] }], generationConfig: gen });
+  for (const model of await rerankModels(key, ai.model)) {
+    const gen = { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: 300,
+      responseSchema: { type: "OBJECT", properties: { order: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["order"] },
+      thinkingConfig: { thinkingLevel: "minimal" } };
+    for (let t = 0; t < 2; t++) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: body(gen) });
+      if (r.status === 400 && gen.thinkingConfig) { delete gen.thinkingConfig; continue; }
+      if (!r.ok) {
+        rrError = { 429: "사용 한도 초과", 404: "모델 없음", 503: "서버 바쁨", 403: "키 권한 없음", 402: "결제 확인 필요" }[r.status]
+                  || `오류 ${r.status}`;
+        break;                                            // 다음 모델로
+      }
+      const parts = ((await r.json()).candidates || [{}])[0].content?.parts || [];
+      const txt = parts.filter(x => !x.thought).map(x => x.text || "").join("");
+      try {
+        const order = JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1)).order;
+        try { localStorage.setItem("rr_model", model); } catch (e) {}
+        return order;
+      } catch (e) { rrError = "응답 형식 오류"; break; }
+    }
   }
   return null;
 }
@@ -555,7 +586,7 @@ async function aiRerank(q, results, my) {
   if (!order) {
     const prev = $("count").innerHTML; $("count").innerHTML = prev + " · 🎯 AI가 고르는 중…";
     try { order = await callRerank(q, cands.map(candText)); } catch (e) { order = null; }
-    if (my === seq && !order) $("count").innerHTML = prev + " · AI 정밀 검색 실패(일반 결과 표시)";
+    if (my === seq && !order) $("count").innerHTML = prev + ` · AI 정밀 검색 실패${rrError ? `: ${esc(rrError)}` : ""} (일반 결과 표시)`;
     if (!order) return null;
     order = order.filter(i => Number.isInteger(i) && i >= 0 && i < cands.length);
     rrCache.set(ck, order);

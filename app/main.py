@@ -160,7 +160,12 @@ def api_rerank(req: RerankReq):
     from . import rerank
     if not settings.gemini_api_key:
         raise HTTPException(400, "Gemini 키 없음")
-    order, usage = rerank.rerank(req.q[:300], req.cands[:40], db.get_meta("gemini_model") or None)
+    try:
+        order, usage = rerank.rerank(req.q[:300], req.cands[:40], db.get_meta("gemini_model") or None)
+    except Exception as e:
+        msg = str(e)
+        reason = "사용 한도 초과" if "429" in msg else "결제 확인 필요" if "402" in msg else "AI 응답 없음"
+        raise HTTPException(503, reason)
     return {"order": order, "usage": usage}
 
 

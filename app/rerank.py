@@ -21,9 +21,37 @@ def prompt(q: str, cands: list[str]) -> str:
             f"질문: {q}\n후보:\n{lines}")
 
 
+_good_model: dict = {}
+
+
+def _alternatives(client: httpx.Client, first: str | None) -> list[str]:
+    """한도·과부하 때 시도할 같은 계열 모델 (모델마다 한도가 따로라서)."""
+    from .vision import _version, list_gemini_models
+    out = [m for m in (_good_model.get("m"), first) if m]
+    try:
+        names = [n.removeprefix("models/") for n in list_gemini_models(client)]
+        import re
+        fam = [n for n in names if re.match(r"^gemini-[\d.]+-flash(-lite)?(-latest|-\d+)?$", n)]
+        out += sorted([n for n in fam if "lite" in n], key=_version, reverse=True)
+        out += sorted([n for n in fam if "lite" not in n], key=_version, reverse=True)
+    except Exception:
+        pass
+    return list(dict.fromkeys(out))[:4]
+
+
 def rerank(q: str, cands: list[str], model: str | None = None) -> tuple[list[int], dict]:
+    from .vision import ModelNotFound, QuotaError, ServerBusy
     with httpx.Client(timeout=30) as client:
-        data, usage = gemini_json(client, prompt(q, cands), SCHEMA, 300, model)
+        err: Exception | None = None
+        for m in _alternatives(client, model) or [None]:
+            try:
+                data, usage = gemini_json(client, prompt(q, cands), SCHEMA, 300, m)
+                _good_model["m"] = m
+                break
+            except (QuotaError, ModelNotFound, ServerBusy) as e:   # 다음 모델로
+                err = e
+        else:
+            raise err or RuntimeError("AI 정밀 검색 실패")
     seen, order = set(), []
     for i in data.get("order", []):
         if isinstance(i, int) and 0 <= i < len(cands) and i not in seen:

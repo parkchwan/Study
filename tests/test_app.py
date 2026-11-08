@@ -657,3 +657,20 @@ def test_429_minute_waits_day_stops(monkeypatch):
     import pytest
     with pytest.raises(vision.QuotaError):
         vision.gemini_json(c2, "q", {}, 10, "m")
+
+
+def test_rerank_falls_back_to_other_model(monkeypatch):
+    from app import rerank, vision
+    monkeypatch.setattr(rerank, "_good_model", {})
+    monkeypatch.setattr(vision, "list_gemini_models", lambda c: ["models/gemini-3.5-flash-lite", "models/gemini-3.1-flash-lite",
+                                                               "models/gemini-3.8-flash"])
+    tried = []
+    def fake(c, p, s, m, model=None):
+        tried.append(model)
+        if model == "gemini-3.5-flash-lite": raise vision.QuotaError("gemini 429", 429)
+        return {"order": [1]}, {"in": 1, "out": 1}
+    monkeypatch.setattr(rerank, "gemini_json", fake)
+    order, _ = rerank.rerank("q", ["a", "b"], "gemini-3.5-flash-lite")
+    assert order == [1] and tried == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    tried.clear(); rerank.rerank("q", ["a", "b"], "gemini-3.5-flash-lite")
+    assert tried[0] == "gemini-3.1-flash-lite"                    # 성공한 모델을 먼저
