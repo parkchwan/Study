@@ -174,11 +174,20 @@ function search() {
     if (qv && my === seq) showResults(rank(state.q, state.kind, qv));
   }, 500);
 }
-function showResults(results) {
-  state.results = results;
+let weakShown = false, lastAll = [];
+function showResults(results, keepWeak) {
+  lastAll = results;
+  if (!keepWeak) weakShown = false;
+  const strong = results.filter(p => !p._weak), weak = results.length - strong.length;
+  state.results = weakShown ? results : strong;
   $("empty").hidden = results.length > 0;
-  const sem = results.filter(p => p._sem).length;
-  $("count").textContent = results.length ? `결과 ${results.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}` : "";
+  const sem = state.results.filter(p => p._sem).length;
+  $("count").innerHTML = !state.q ? (results.length ? `전체 ${results.length}쪽` : "") : results.length
+    ? `관련 높은 결과 ${strong.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`
+      + (weak ? ` · <a href="#" id="weakLink">${weakShown ? "관련도 낮은 결과 숨기기" : `관련도 낮은 결과 ${weak}쪽 더 보기`}</a>` : "")
+    : "";
+  const wl = document.getElementById("weakLink");
+  if (wl) wl.onclick = e => { e.preventDefault(); weakShown = !weakShown; showResults(lastAll, true); };
   $("grid").innerHTML = ""; shown = 0;
   renderMore();
 }
@@ -341,8 +350,17 @@ function prepare() {       // 페이지마다 검색용 글을 미리 만들어 
   }
 }
 // 검색어를 '단위'로 나눔: 동의어 사전에 있는 말은 최대한 길게 묶고(예: 타설속도), 나머지는 그대로
+// 검색어에서 뺄 연결어, 떼어 낼 조사 ("기온에 따른 강도" → 기온, 강도)
+const STOPQ = new Set(["따른", "따라", "대한", "대하여", "관한", "관련", "위한", "의한", "통한", "및", "또는", "그리고", "등", "등의", "의", "에", "와", "과", "시", "때"]);
+const JOSAQ = ["에서는", "으로는", "에서", "으로", "에는", "에게", "까지", "부터", "보다", "이란", "란", "은", "는", "이", "가", "을", "를", "의", "에", "로", "와", "과", "도"];
+function cleanTok(t) {
+  if (STOPQ.has(t)) return "";
+  if (/[가-힣]$/.test(t) && !THES.has(norm(t)))
+    for (const j of JOSAQ) if (t.endsWith(j) && t.length - j.length >= 2) return t.slice(0, -j.length);
+  return t;
+}
 function parseQuery(q) {
-  const toks = q.toLowerCase().split(/\s+/).filter(Boolean), units = [];
+  const toks = q.toLowerCase().split(/\s+/).map(cleanTok).filter(Boolean), units = [];
   const unit = t => ({ text: t, alts: THES.has(t) ? [...THES.get(t)] : [t] });
   for (let i = 0; i < toks.length;) {
     let took = 0;
@@ -381,12 +399,15 @@ function rank(q, kind, qv) {
   if (!q) return pages.map(view);
   const units = parseQuery(q);
   if (!units.length) return pages.map(view);
-  // 1) 단위마다 어느 페이지에 있는지 (2=입력 그대로, 1=동의어)
+  // 1) 단위마다 어느 페이지에 있는지 (2=입력 그대로, 1=동의어)와 처음 나온 위치
+  const pos = (p, u) => { let best = -1;
+    for (const a of u.alts) { if (/^[a-z0-9]{1,4}$/.test(a) && !has(p, a)) continue;
+      const i = p.hayN.indexOf(a); if (i >= 0 && (best < 0 || i < best)) best = i; } return best; };
   const hits = pages.map(p => units.map(u => has(p, u.text) ? 2 : (u.alts.some(a => a !== u.text && has(p, a)) ? 1 : 0)));
   const N = pages.length;
   const w = units.map((u, k) => Math.log(1 + N / (1 + hits.reduce((n, h) => n + (h[k] ? 1 : 0), 0))));
   const W = w.reduce((a, b) => a + b, 0) || 1;
-  // 2) 의미 유사도
+  // 2) 의미 유사도 (단어가 달라도 뜻이 가까운 정도)
   let sims = null, simCut = 1;
   if (qv && EMB) {
     const idx = new Map(DATA.pages.map((p, i) => [p.page_key, i]));
@@ -399,16 +420,33 @@ function rank(q, kind, qv) {
   pages.forEach((p, i) => {
     const h = hits[i];
     const cov = h.reduce((a, x, k) => a + (x ? w[k] * (x === 2 ? 1 : 0.85) : 0), 0) / W;
-    const sim = sims ? sims[i] : 0;
+    const sim = sims ? Math.max(0, sims[i]) : 0;
+    const all = h.every(x => x > 0);
     const lexOk = units.length === 1 ? h[0] > 0 : cov >= 0.5;
-    if (lexOk) {
-      const headBonus = units.some(u => p.headN.includes(u.text)) ? 0.1 : 0;
-      out.push({ ...view(p), _score: cov + headBonus + 0.4 * Math.max(0, sim), _i: i });
-    } else if (sims && sim >= simCut) {
-      out.push({ ...view(p), _score: 0.5 * sim, _sem: true, _i: i });
+    if (!lexOk && !(sims && sims[i] >= simCut)) return;
+    // 문맥: 핵심어들이 가까이 붙어 나오면(같은 문장·제목) 가산
+    let prox = 0;
+    if (all && units.length > 1) {
+      const ps = units.map(u => pos(p, u)).filter(x => x >= 0);
+      const span = Math.max(...ps) - Math.min(...ps);
+      prox = span <= 25 ? 0.35 : span <= 80 ? 0.2 : span <= 250 ? 0.08 : 0;
     }
+    const head = units.some(u => p.headN.includes(u.text)) ? 0.1 : 0;
+    const lex = lexOk ? cov + prox + head + (all ? 0.15 : 0) : 0;
+    out.push({ ...view(p), _lex: lex, _simv: sim, _sem: !lexOk, _i: i });
   });
-  return out.sort((a, b) => b._score - a._score || a._i - b._i);
+  // 3) 최종 점수: 글자 맞음(+가까움)과 뜻의 가까움을 반반 → 문맥이 맞는 페이지가 위로
+  const maxL = Math.max(0.0001, ...out.map(r => r._lex)), maxS = Math.max(0.0001, ...out.map(r => r._simv));
+  // (뜻이 아주 가까우면 단어가 달라도 위로: 의미 점수만으로도 높은 자리에 올 수 있게)
+  out.forEach(r => { r._score = sims ? Math.max(0.5 * r._lex / maxL + 0.5 * r._simv / maxS, 0.8 * r._simv / maxS)
+                                     : r._lex / maxL; });
+  out.sort((a, b) => b._score - a._score || a._i - b._i);
+  // 4) 관련도가 확 떨어지는 지점 아래는 '관련도 낮은 결과'로 접어 둠
+  const top = out.length ? out[0]._score : 0;
+  // 의미 검색이 없으면 글자 점수뿐이라 기준을 더 엄격하게 (핵심어가 가까이 붙은 페이지만 '관련 높음')
+  const cut = sims ? 0.55 : 0.8;
+  out.forEach(r => { r._weak = r._score < top * cut; });
+  return out;
 }
 // 의미 검색용 검색어 벡터: PC는 서버가, 태블릿은 그 기기에 저장한 키로 Gemini에 직접 요청
 const qvCache = new Map();
