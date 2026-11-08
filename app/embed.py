@@ -66,7 +66,31 @@ def enabled() -> bool:
     return bool(settings.gemini_api_key) and settings.vision_provider in ("auto", "gemini") and settings.semantic
 
 
-def build(db, batch: int = 100, progress=None) -> int:
+class Pace:
+    """분당 한도(토큰·요청) 아래로 보내도록 속도 조절. 지난 60초 동안 보낸 양을 세어 넘치면 기다림."""
+
+    def __init__(self, tpm: int, rpm: int, clock=time.monotonic, sleep=time.sleep):
+        self.tpm, self.rpm, self.clock, self.sleep = tpm, rpm, clock, sleep
+        self.sent: list[tuple[float, int, int]] = []
+
+    def wait(self, tokens: int, reqs: int) -> None:
+        while True:
+            now = self.clock()
+            self.sent = [x for x in self.sent if now - x[0] < 60]
+            t = sum(x[1] for x in self.sent)
+            r = sum(x[2] for x in self.sent)
+            if not self.sent or (t + tokens <= self.tpm and r + reqs <= self.rpm):
+                self.sent.append((now, tokens, reqs))
+                return
+            self.sleep(max(0.5, 60 - (now - self.sent[0][0])))
+
+
+def est_tokens(text: str) -> int:
+    """대략적인 토큰 수 (한글은 글자당 토큰이 많아 넉넉히 잡음)."""
+    return len(text) // 2 + 8
+
+
+def build(db, batch: int = 50, progress=None, pace: Pace | None = None) -> int:
     """내용이 바뀌었거나 아직 없는 페이지만 임베딩. 새로 계산한 페이지 수 반환."""
     if not enabled():
         return 0
@@ -80,9 +104,12 @@ def build(db, batch: int = 100, progress=None) -> int:
         if have.get(p["page_key"]) != s:
             todo.append((p["page_key"], s, t))
     done = 0
+    # 임베딩 모델 한도(분당 토큰 100만·요청 3천)보다 여유 있게: 기본 70만 토큰·2천 건
+    pace = pace or Pace(settings.embed_tpm, settings.embed_rpm)
     with httpx.Client(timeout=120) as client:
         for i in range(0, len(todo), batch):
             chunk = todo[i: i + batch]
+            pace.wait(sum(est_tokens(t) for _, _, t in chunk), len(chunk))
             try:
                 vecs = embed_texts(client, [t for _, _, t in chunk], "RETRIEVAL_DOCUMENT")
             except Exception as e:

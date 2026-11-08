@@ -674,3 +674,17 @@ def test_rerank_falls_back_to_other_model(monkeypatch):
     assert order == [1] and tried == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
     tried.clear(); rerank.rerank("q", ["a", "b"], "gemini-3.5-flash-lite")
     assert tried[0] == "gemini-3.1-flash-lite"                    # 성공한 모델을 먼저
+
+
+def test_embedding_pace_stays_under_limits():
+    from app.embed import Pace
+    now = [0.0]; slept = []
+    def sleep(s): slept.append(s); now[0] += s
+    p = Pace(tpm=1000, rpm=10, clock=lambda: now[0], sleep=sleep)
+    for _ in range(5):
+        p.wait(400, 3)                         # 1분에 1000토큰 → 400씩이면 2번마다 대기
+    assert len(slept) >= 2
+    # 어떤 60초 구간에서도 1000토큰·10건을 넘지 않음
+    for t0, _, _ in p.sent:
+        win = [x for x in p.sent if t0 <= x[0] < t0 + 60]
+        assert sum(x[1] for x in win) <= 1000 and sum(x[2] for x in win) <= 10
