@@ -52,6 +52,7 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     from . import thesaurus
     from .vision import is_junk, looks_like_toc
     # 내보낼 때도 목차·색인·단순 목록·로고를 거름 → 파일을 다시 처리하기 전이라도 바로 반영
+    concepts = db.concepts()     # ① AI가 정리한 페이지별 요약·개념·질문
     pages = []
     for p in db.export_pages(with_text=True):
         toc = looks_like_toc(p.pop("text", ""))
@@ -72,9 +73,12 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
         cpages.append([p["page_key"], fidx[fk], p["page_no"],
                        [[it["kind"], it["title"] or "", (it["description"] or "")[:120], it["source"]]
                         for it in p["items"]]])
-        texts[p["page_key"]] = [p["t"], [[it["description"] or "", it["keywords"] or ""] for it in p["items"]]]
+        c = concepts.get(p["page_key"]) or {}
+        texts[p["page_key"]] = [p["t"], [[it["description"] or "", it["keywords"] or ""] for it in p["items"]],
+                                c.get("summary", ""), c.get("concepts", []), c.get("questions", [])]
     data = {
         "meta": {"folder_name": db.get_meta("folder_name"), "v": 2,
+                 "ai": {"model": db.get_meta("gemini_model") or settings.gemini_model},
                  "exported_at": time.strftime("%Y-%m-%d %H:%M")},
         "files": files,      # [파일명, 경로, 링크, 총쪽수, 이미지버전, 원본파일이름(files/ 아래, 없으면 "")]
         "pages": cpages,     # [page_key, 파일번호, 쪽, [[종류, 제목, 짧은설명, 분석]]]

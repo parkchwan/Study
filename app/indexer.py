@@ -107,11 +107,18 @@ class IndexJob:
         """동의어 사전 + 의미 검색 준비 (새로 생긴 용어·바뀐 페이지만, 글자만 보내므로 저렴)."""
         if not router.configured or router.disabled:
             return
-        from . import embed, thesaurus
+        from . import embed, enrich, thesaurus
+        self.db.set_meta("gemini_model", router.gemini_model)       # 태블릿 AI 정밀 검색도 같은 모델 사용
         try:
             st["phase"] = "동의어 사전 만드는 중"
             thesaurus.build(self.db, router.gemini_model,
                             progress=lambda d, t: st.update(phase=f"동의어 사전 만드는 중 {d}/{t}"))
+            st["phase"] = "페이지 내용 깊게 정리 중"
+            res = enrich.build(self.db, router.gemini_model, progress=lambda d, t, s: st.update(
+                phase=f"페이지 내용 깊게 정리 중 {d}/{t}쪽", enrich=dict(s)))
+            st["enrich"] = res
+            if res.get("error"):
+                st["errors"].append(f"개념 정리 중단(다음 색인 때 이어서): {res['error']}")
             st["phase"] = "의미 검색 준비 중"
             embed.build(self.db, progress=lambda d, t: st.update(phase=f"의미 검색 준비 중 {d}/{t}쪽"))
         except Exception as e:

@@ -43,6 +43,9 @@
   .card .file { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card .title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .tag.sem { background: transparent; border: 1px dashed var(--accent); }
+  .tag.ai { background: #f59e0b; color: #1d2330; }
+  #aiBtn.on { background: #f59e0b; color: #1d2330; border-color: #f59e0b; }
+  .concepts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   #keybar button { padding: 3px 10px; font-size: 13px; }
   .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--accent-soft);
          color: var(--accent); margin-right: 4px; }
@@ -90,7 +93,8 @@
     <span class="status" id="status">불러오는 중…</span>
   </div>
   <div class="row">
-    <input id="q" type="text" placeholder="검색: 예) 공정 순서도, 표 3, 필기한 단어(피복두께)">
+    <input id="q" type="text" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp, 필기한 단어">
+    <button id="aiBtn" hidden title="상위 결과를 AI가 질문의 뜻에 맞게 다시 골라 줌 (검색 1번에 약 1원)">🎯 AI 정밀 검색: 끔</button>
   </div>
   <div class="chips" id="chips"></div>
   <div class="status" id="keybar" hidden></div>
@@ -148,7 +152,8 @@ const imgUrl = (dir, p) => `img/${dir}/${p.page_key}.webp?v=${p.v || ""}`;
 function cardHtml(p, i) {
   const first = p.items[0] || {};
   const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("")
-    + (p._sem ? `<span class="tag sem" title="단어는 다르지만 뜻이 비슷한 결과">뜻 비슷</span>` : "");
+    + (p._sem ? `<span class="tag sem" title="단어는 다르지만 뜻이 비슷한 결과">뜻 비슷</span>` : "")
+    + (p._ai ? `<span class="tag ai" title="AI가 질문의 뜻에 맞다고 고른 결과">AI 추천</span>` : "");
   return `<div class="card" data-i="${i}">
     <img loading="lazy" src="${imgUrl("thumbs", p)}" alt="">
     <div class="meta"><div>${tags}</div>
@@ -168,11 +173,19 @@ function search() {
   if (!DATA) return;
   showResults(rank(state.q, state.kind, null));          // 1) 글자·동의어 검색 → 즉시 표시
   clearTimeout(semTimer);
-  if (!state.q || !EMB) return;
-  semTimer = setTimeout(async () => {                     // 2) 입력이 멈추면 의미 검색을 더해 다시 정렬
-    const qv = await queryVector(state.q);
-    if (qv && my === seq) showResults(rank(state.q, state.kind, qv));
-  }, 500);
+  if (!state.q || (!EMB && !aiOn())) return;
+  semTimer = setTimeout(async () => {                     // 입력이 멈추면
+    let res = null;
+    if (EMB) {                                            // 2) 의미 검색을 더해 다시 정렬
+      const qv = await queryVector(state.q);
+      if (my !== seq) return;
+      if (qv) { res = rank(state.q, state.kind, qv); showResults(res); }
+    }
+    if (aiOn()) {                                         // 3) AI 정밀 검색: 상위 후보를 AI가 뜻에 맞게 다시 고름
+      const rr = await aiRerank(state.q, res || rank(state.q, state.kind, null), my);
+      if (rr && my === seq) showResults(rr);
+    }
+  }, 600);
 }
 let weakShown = false, lastAll = [];
 function showResults(results, keepWeak) {
@@ -181,9 +194,9 @@ function showResults(results, keepWeak) {
   const strong = results.filter(p => !p._weak), weak = results.length - strong.length;
   state.results = weakShown ? results : strong;
   $("empty").hidden = results.length > 0;
-  const sem = state.results.filter(p => p._sem).length;
+  const sem = state.results.filter(p => p._sem).length, ai = results.filter(p => p._ai).length;
   $("count").innerHTML = !state.q ? (results.length ? `전체 ${results.length}쪽` : "") : results.length
-    ? `관련 높은 결과 ${strong.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`
+    ? (ai ? `🎯 AI가 고른 결과 ${ai}쪽` : `관련 높은 결과 ${strong.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`)
       + (weak ? ` · <a href="#" id="weakLink">${weakShown ? "관련도 낮은 결과 숨기기" : `관련도 낮은 결과 ${weak}쪽 더 보기`}</a>` : "")
     : "";
   const wl = document.getElementById("weakLink");
@@ -228,7 +241,10 @@ function openViewer(i) {
     o.hidden = false;
   } else if (p.web_link) { o.href = p.web_link; o.hidden = false; }
   else o.hidden = true;
-  $("vitems").innerHTML = p.items.map(it => `<div class="item"><span class="tag">${esc(KINDS[it.kind] || it.kind)}</span>
+  $("vitems").innerHTML = (p.summary ? `<div class="item"><b>📌 ${esc(p.summary)}</b>
+       <div class="concepts">${(p.concepts || []).map(c => `<span class="tag">${esc(c)}</span>`).join("")}</div>
+       ${(p.questions || []).map(q => `<div class="kw">❓ ${esc(q)}</div>`).join("")}</div>` : "")
+    + p.items.map(it => `<div class="item"><span class="tag">${esc(KINDS[it.kind] || it.kind)}</span>
      <b>${esc(it.title)}</b><div class="desc">${esc(it.description)}</div>
      ${it.keywords ? `<div class="kw"># ${esc(it.keywords)}</div>` : ""}
      <div class="kw">분석: ${esc(it.source)}</div></div>`).join("");
@@ -285,6 +301,8 @@ async function poll() {
   } else {
     $("bar").style.width = j.phase ? "100%" : "0";
     $("btnIndex").disabled = false;
+    if (j.enrich && j.enrich.pages)
+      msg += ` · 개념 정리 ${j.enrich.pages}쪽 (AI 토큰 입력 ${j.enrich.in.toLocaleString()} / 출력 ${j.enrich.out.toLocaleString()})`;
     if (j.skipped_office) msg += ` · 엑셀/워드/PPT ${j.skipped_office}개 건너뜀 (LibreOffice 설치 시 색인)`;
     if (j.incomplete) msg += ` · AI 미완료 파일 ${j.incomplete}개 (한도 도달) → 나중에 "색인 시작"을 다시 누르면 이어서 분석`;
     if (j.errors && j.errors.length) msg += ` · 오류 ${j.errors.length}건: ${j.errors.slice(-1)[0]}`;
@@ -323,8 +341,9 @@ function expandData(raw) {
 function mergeText(T) {
   for (const p of DATA.pages) {
     const e = T[p.page_key]; if (!e) continue;
-    const [body, details] = Array.isArray(e) ? e : [e, []];
+    const [body, details, summary, concepts, questions] = Array.isArray(e) ? e : [e, []];
     TEXT[p.page_key] = body || "";
+    p.summary = summary || ""; p.concepts = concepts || []; p.questions = questions || [];
     p.items.forEach((it, i) => {
       const [desc, kw] = details[i] || [];
       if (desc) it.description = desc;
@@ -344,8 +363,9 @@ function buildThes(groups) {
 }
 function prepare() {       // 페이지마다 검색용 글을 미리 만들어 둠
   for (const p of DATA.pages) {
-    const head = p.items.map(it => `${it.title} ${it.keywords}`).join(" ");
-    const all = `${p.file_name} ${head} ${p.items.map(it => `${KINDS[it.kind] || ""} ${it.description}`).join(" ")} ${TEXT[p.page_key] || ""}`;
+    // ① AI가 정리한 요약·핵심 개념은 제목급(가장 중요한 단서)으로, 질문은 본문급으로 반영
+    const head = p.items.map(it => `${it.title} ${it.keywords}`).join(" ") + ` ${p.summary || ""} ${(p.concepts || []).join(" ")}`;
+    const all = `${p.file_name} ${head} ${p.items.map(it => `${KINDS[it.kind] || ""} ${it.description}`).join(" ")} ${(p.questions || []).join(" ")} ${TEXT[p.page_key] || ""}`;
     p.hayN = norm(all); p.hayS = all.toLowerCase(); p.headN = norm(head);
   }
 }
@@ -479,8 +499,71 @@ function keyBar(msg) {      // 태블릿: 의미 검색용 키를 이 기기에�
     const k = prompt("Gemini API 키 (AIza… 또는 AQ.…). 이 태블릿 브라우저에만 저장됩니다.", "");
     if (k === null) return;
     try { k.trim() ? localStorage.setItem("gemini_key", k.trim()) : localStorage.removeItem("gemini_key"); } catch (e) {}
-    qvCache.clear(); keyBar(); search();
+    qvCache.clear(); keyBar(); aiButton(); search();
   };
+}
+// ── ③ AI 정밀 검색 ──
+function aiAvail() { return !!(DATA && DATA.meta.ai && (DATA.meta.ai.rerank || (STATIC_MODE && getKey()))); }
+function aiOn() { try { return aiAvail() && localStorage.getItem("ai_precise") === "1"; } catch (e) { return false; } }
+function aiButton() {
+  const b = $("aiBtn"); b.hidden = !aiAvail();
+  b.classList.toggle("on", aiOn()); b.textContent = `🎯 AI 정밀 검색: ${aiOn() ? "켬" : "끔"}`;
+}
+$("aiBtn").onclick = () => {
+  try { localStorage.setItem("ai_precise", aiOn() ? "0" : "1"); } catch (e) {}
+  aiButton(); search();
+};
+function candText(p) {
+  const its = p.items.map(it => `[${KINDS[it.kind] || it.kind}] ${it.title} ${String(it.description || "").slice(0, 80)}`).join(" / ");
+  return `${p.file_name} ${p.page_no}쪽 | ${p.summary || ""} | 개념: ${(p.concepts || []).join(", ")} | ${its}`.slice(0, 400);
+}
+function rerankPrompt(q, cands) {   // app/rerank.py 와 같은 내용
+  return "건축시공기술사 수험 자료에서 사용자가 찾는 페이지를 고르는 일이다. 질문의 뜻(문맥·의도)을 이해하고, "
+    + "아래 후보 중 질문에 실제로 답이 되거나 직접 관련된 페이지 번호만 관련도가 높은 순서로 나열하라. "
+    + "단어만 겹치고 주제가 다른 페이지는 빼라. JSON {\"order\":[번호...]}.\n"
+    + `질문: ${q}\n후보:\n` + cands.map((c, i) => `[${i}] ${c}`).join("\n");
+}
+async function callRerank(q, texts) {
+  const ai = DATA.meta.ai;
+  if (ai.rerank) {
+    const r = await fetch(ai.rerank, { method: "POST", headers: { "Content-Type": "application/json" },
+                                       body: JSON.stringify({ q, cands: texts }) });
+    return r.ok ? (await r.json()).order : null;
+  }
+  const key = getKey(); if (!key) return null;
+  const gen = { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: 300,
+    responseSchema: { type: "OBJECT", properties: { order: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["order"] },
+    thinkingConfig: { thinkingLevel: "minimal" } };
+  for (let t = 0; t < 2; t++) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ai.model}:generateContent`, {
+      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents: [{ parts: [{ text: rerankPrompt(q, texts) }] }], generationConfig: gen }) });
+    if (r.status === 400 && gen.thinkingConfig) { delete gen.thinkingConfig; continue; }
+    if (!r.ok) return null;
+    const parts = ((await r.json()).candidates || [{}])[0].content?.parts || [];
+    const txt = parts.filter(x => !x.thought).map(x => x.text || "").join("");
+    try { return JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1)).order; } catch (e) { return null; }
+  }
+  return null;
+}
+const rrCache = new Map();
+async function aiRerank(q, results, my) {
+  const cands = results.slice(0, 30);
+  if (cands.length < 2) return null;
+  const ck = `${q}|${state.kind}|${cands.map(p => p.page_key).join(",")}`;
+  let order = rrCache.get(ck);
+  if (!order) {
+    const prev = $("count").innerHTML; $("count").innerHTML = prev + " · 🎯 AI가 고르는 중…";
+    try { order = await callRerank(q, cands.map(candText)); } catch (e) { order = null; }
+    if (my === seq && !order) $("count").innerHTML = prev + " · AI 정밀 검색 실패(일반 결과 표시)";
+    if (!order) return null;
+    order = order.filter(i => Number.isInteger(i) && i >= 0 && i < cands.length);
+    rrCache.set(ck, order);
+  }
+  if (!order.length) return null;
+  const picked = new Set(order.map(i => cands[i].page_key));
+  return [...order.map(i => ({ ...cands[i], _ai: true, _weak: false })),
+          ...results.filter(p => !picked.has(p.page_key)).map(p => ({ ...p, _ai: false, _weak: true }))];
 }
 function countKinds() {
   state.byKind = {};
@@ -501,7 +584,7 @@ async function loadAll() {
     if (m.embed) jobs.push(fetch(m.embed.file).then(r => r.arrayBuffer()).then(b => { EMB = new Int8Array(b); EMB_DIM = m.embed.dim; }));
     else EMB = null;
     const res = await Promise.allSettled(jobs);
-    prepare(); search(); keyBar();
+    prepare(); aiButton(); search(); keyBar();
     if (STATIC_MODE) $("status").textContent = head + (res[0].status === "rejected" ? " · 본문 검색 불가(그림 설명만 검색)" : "");
   } finally { loading = false; }
 }

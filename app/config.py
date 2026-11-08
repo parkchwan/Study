@@ -48,6 +48,9 @@ class Settings:
     # 의미 검색 (뜻이 비슷한 페이지 찾기): on/off, 임베딩 모델
     semantic: bool = field(default_factory=lambda: os.getenv("SEMANTIC_SEARCH", "on").lower() in ("on", "1", "true", "yes"))
     embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "gemini-embedding-001"))
+    # ① 깊은 이해(페이지별 개념·요약·질문 정리): on/off, 시험용 최대 쪽수(0 = 전체)
+    enrich: bool = field(default_factory=lambda: os.getenv("ENRICH", "on").lower() in ("on", "1", "true", "yes"))
+    enrich_max_pages: int = field(default_factory=lambda: _int("ENRICH_MAX_PAGES", 0))
 
     @property
     def ai_image_px(self) -> int:

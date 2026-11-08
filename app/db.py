@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
     sig          TEXT,               -- 임베딩한 글의 해시: 내용이 바뀔 때만 다시 계산
     vec          BLOB                -- int8 벡터
 );
+CREATE TABLE IF NOT EXISTS page_concepts (
+    page_key     TEXT PRIMARY KEY,
+    sig          TEXT,               -- 정리에 쓴 글의 해시: 바뀐 페이지만 다시 정리
+    data         TEXT                -- JSON: summary, concepts, questions
+);
 CREATE TABLE IF NOT EXISTS thesaurus (
     term         TEXT PRIMARY KEY,   -- 정규화된 용어
     variants     TEXT                -- JSON 배열: [원래 표기, 동의어...]
@@ -235,6 +240,18 @@ class DB:
             it["s"] = " ".join(str(v) for v in (r["kind"], r["title"], r["description"], r["keywords"]) if v).lower()
             p["items"].append(it)
         return [p for p in out.values() if p["items"]]
+
+    # ── ① 깊은 이해: 페이지별 개념 정리 ──
+    def concept_sigs(self) -> dict[str, str]:
+        return {r["page_key"]: r["sig"] for r in self.conn.execute("SELECT page_key, sig FROM page_concepts")}
+
+    def concept_save(self, rows: list[tuple[str, str, dict]]) -> None:
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO page_concepts(page_key, sig, data) VALUES(?,?,?)",
+                                  [(k, s, json.dumps(d, ensure_ascii=False)) for k, s, d in rows])
+
+    def concepts(self) -> dict[str, dict]:
+        return {r["page_key"]: json.loads(r["data"]) for r in self.conn.execute("SELECT page_key, data FROM page_concepts")}
 
     # ── 의미 검색 임베딩 ──
     def embedding_sigs(self) -> dict[str, str]:

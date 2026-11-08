@@ -115,10 +115,11 @@ _payload: dict = {"key": None}
 def _cached_payload():
     from . import embed
     st = db.stats()
-    key = (st["pages"], st["items"], len(db.thesaurus_terms()), len(db.embedding_sigs()))
+    key = (st["pages"], st["items"], len(db.thesaurus_terms()), len(db.embedding_sigs()), len(db.concept_sigs()))
     if _payload["key"] != key:
         data, texts, thes = build_payload(db)
         data["meta"].update({"text": "/api/text", "thesaurus": "/api/thesaurus"})
+        data["meta"]["ai"]["rerank"] = "/api/rerank"
         blob = db.embedding_blob([p[0] for p in data["pages"]], embed.DIM)
         if any(blob):
             data["meta"]["embed"] = {"file": "/api/embeddings", "dim": embed.DIM, "model": settings.embed_model,
@@ -146,6 +147,21 @@ def api_thesaurus():
 def api_embeddings():
     from fastapi import Response
     return Response(_cached_payload()["blob"], media_type="application/octet-stream")
+
+
+class RerankReq(BaseModel):
+    q: str
+    cands: list[str]
+
+
+@app.post("/api/rerank")
+def api_rerank(req: RerankReq):
+    """PC 화면용 AI 정밀 검색 (키는 PC의 .env)."""
+    from . import rerank
+    if not settings.gemini_api_key:
+        raise HTTPException(400, "Gemini 키 없음")
+    order, usage = rerank.rerank(req.q[:300], req.cands[:40], db.get_meta("gemini_model") or None)
+    return {"order": order, "usage": usage}
 
 
 @app.get("/api/qvec")

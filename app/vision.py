@@ -395,3 +395,42 @@ class VisionRouter:
                     break
         self.calls["failed"] += 1
         return None
+
+
+def gemini_json(client: httpx.Client, prompt_text: str, schema: dict, max_tokens: int,
+                model: str | None = None) -> tuple[dict, dict]:
+    """글만 보내고 정해진 형식(JSON)으로 답을 받음. (답, 사용 토큰) 반환. 한도·과부하는 기다렸다 재시도."""
+    model = model or settings.gemini_model
+    gen = {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0.1,
+           "maxOutputTokens": max_tokens}
+    if _thinking_cfg_ok:
+        gen["thinkingConfig"] = {"thinkingLevel": "minimal"}
+    body = {"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": gen}
+    last = ""
+    for wait in (0, 10, 30, 60):
+        if wait:
+            time.sleep(wait)
+        r = client.post(f"{GEMINI_BASE}/models/{model}:generateContent",
+                        headers={"x-goog-api-key": settings.gemini_api_key}, json=body)
+        if r.status_code == 400 and "think" in r.text.lower() and "thinkingConfig" in gen:
+            gen.pop("thinkingConfig")
+            continue
+        if r.status_code == 404:
+            raise ModelNotFound(model)
+        if r.status_code in (401, 402, 403):
+            raise QuotaError(f"gemini {r.status_code}: {r.text[:200]}", r.status_code)
+        if r.status_code == 429 or r.status_code >= 500:
+            last = f"gemini {r.status_code}"
+            continue
+        r.raise_for_status()
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            raise Blocked("no candidates")
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        u = data.get("usageMetadata") or {}
+        usage = {"in": u.get("promptTokenCount", 0),
+                 "out": u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)}
+        return json.loads(text[text.find("{"): text.rfind("}") + 1], strict=False), usage
+    raise ServerBusy(last or "gemini 응답 없음")

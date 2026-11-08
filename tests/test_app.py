@@ -585,3 +585,50 @@ def test_originals_export_and_pc_route(env, monkeypatch):
     r = c.get(f"/files/{orig}", headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100
     assert c.get("/files/nope.pdf").status_code == 404 and c.get("/pdf.html").status_code == 200
+
+
+def test_enrich_build_export_and_rerank(env, monkeypatch):
+    """① 개념 정리가 바뀐 페이지만 하고, 검색 자료·의미 벡터에 반영되며, ③ 재정렬 API가 동작하는지."""
+    import json
+    tmp, db, job, settings = env
+    from app import enrich, embed, rerank
+    from app.export import export_site
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    job.index_local_file({"file_id": "C", "name": "c.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, pdf, None)
+    monkeypatch.setattr(settings, "gemini_api_key", "g"); monkeypatch.setattr(settings, "vision_provider", "gemini")
+    sent = []
+    def fake_json(client, text, schema, max_tokens, model=None):
+        keys = [l.split("key=")[1] for l in text.splitlines() if l.startswith("### key=")]
+        sent.append(keys)
+        return {"pages": [{"key": k, "summary": "기온과 강도 관계", "concepts": ["한중콘크리트", "적산온도"],
+                           "questions": ["기온이 강도에 미치는 영향은?"]} for k in keys]}, {"in": 100, "out": 50}
+    monkeypatch.setattr(enrich, "gemini_json", fake_json)
+    monkeypatch.setattr(settings, "enrich_max_pages", 1)
+    st = enrich.build(db); assert st == {"pages": 1, "in": 100, "out": 50}     # 시험용 상한
+    monkeypatch.setattr(settings, "enrich_max_pages", 0)
+    assert enrich.build(db)["pages"] == 1 and enrich.build(db)["pages"] == 0  # 나머지만, 그다음엔 없음
+    texts_seen = []
+    monkeypatch.setattr(embed, "embed_texts", lambda c, t, task: (texts_seen.extend(t), [[1.0] + [0.0] * 255 for _ in t])[1])
+    embed.build(db)
+    assert all("적산온도" in t for t in texts_seen)                             # 의미 벡터에 개념 반영
+    out = tmp / "web"; export_site(db, out)
+    text = json.loads((out / "text.json").read_text(encoding="utf-8"))
+    assert text["C_2"][2] == "기온과 강도 관계" and "한중콘크리트" in text["C_2"][3]
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    assert data["meta"]["ai"]["model"]
+    monkeypatch.setattr(rerank, "gemini_json", lambda c, p, s, m, model=None: ({"order": [2, 0, 9, 2]}, {"in": 1, "out": 1}))
+    order, _ = rerank.rerank("기온에 따른 강도", ["a", "b", "c"])
+    assert order == [2, 0]                                                    # 범위 밖·중복 제거
+
+
+def test_rerank_endpoint(env, monkeypatch):
+    tmp, db, job, settings = env
+    from fastapi.testclient import TestClient
+    import importlib, app.main as m
+    from app import rerank
+    importlib.reload(m)
+    monkeypatch.setattr(settings, "gemini_api_key", "g")
+    monkeypatch.setattr(rerank, "gemini_json", lambda c, p, s, mx, model=None: ({"order": [1, 0]}, {"in": 1, "out": 1}))
+    r = TestClient(m.app).post("/api/rerank", json={"q": "기온에 따른 강도", "cands": ["a", "b"]})
+    assert r.status_code == 200 and r.json()["order"] == [1, 0]

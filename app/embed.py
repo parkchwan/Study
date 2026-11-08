@@ -19,9 +19,9 @@ log = logging.getLogger(__name__)
 DIM = 256
 
 
-def page_text(p: dict) -> str:
-    """임베딩할 글: 파일명 + 그림 종류·제목·설명·키워드 + 본문 앞부분."""
-    parts = [p["file_name"]]
+def page_text(p: dict, concept: str = "") -> str:
+    """임베딩할 글: AI가 정리한 개념·요약·질문 + 파일명 + 그림 설명 + 본문 앞부분."""
+    parts = [concept, p["file_name"]] if concept else [p["file_name"]]
     for it in p["items"]:
         parts.append(f"{it['kind']}: {it['title'] or ''} {it['description'] or ''} {it['keywords'] or ''}")
     parts.append((p.get("text") or "")[:600])
@@ -62,10 +62,12 @@ def build(db, batch: int = 100, progress=None) -> int:
     """내용이 바뀌었거나 아직 없는 페이지만 임베딩. 새로 계산한 페이지 수 반환."""
     if not enabled():
         return 0
+    from .enrich import as_text
     have = db.embedding_sigs()
+    concepts = db.concepts()
     todo = []
     for p in db.export_pages(with_text=True):
-        t = page_text(p)
+        t = page_text(p, as_text(concepts.get(p["page_key"])))
         s = _sig(t)
         if have.get(p["page_key"]) != s:
             todo.append((p["page_key"], s, t))
