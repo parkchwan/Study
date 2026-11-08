@@ -397,6 +397,44 @@ class VisionRouter:
         return None
 
 
+RETRY_WAITS = (15, 30, 60, 90, 120, 180)   # 글 작업(개념 정리·임베딩)용: 분당 한도는 몇 분이면 풀림
+
+
+def error_text(r: httpx.Response) -> str:
+    """Gemini 오류에서 사람이 읽을 메시지만 (한도 종류 판단용)."""
+    try:
+        return str(r.json().get("error", {}).get("message", ""))[:300]
+    except Exception:
+        return r.text[:300]
+
+
+def retry_delay(r: httpx.Response, default: float) -> float:
+    """서버가 알려 준 대기 시간(Retry-After 또는 RetryInfo.retryDelay)을 따름."""
+    try:
+        if r.headers.get("retry-after"):
+            return min(float(r.headers["retry-after"]), 300)
+        for d in r.json().get("error", {}).get("details", []):
+            if "retryDelay" in d:
+                return min(float(str(d["retryDelay"]).rstrip("s")), 300) + 1
+    except Exception:
+        pass
+    return default
+
+
+def is_daily_or_billing(r: httpx.Response) -> bool:
+    """429 중 '기다려도 안 풀리는' 것인지: 하루 한도(PerDay)나 지출·선불 한도. 분당 한도(PerMinute)는 False."""
+    try:
+        err = r.json().get("error", {})
+        ids = " ".join(f"{v.get('quotaId', '')} {v.get('quotaMetric', '')}"
+                       for d in err.get("details", []) for v in d.get("violations", []) or [])
+    except Exception:
+        err, ids = {}, ""
+    if "perminute" in ids.lower():
+        return False
+    text = f"{ids} {err.get('message', '') if isinstance(err, dict) else ''}".lower()
+    return any(w in text for w in ("perday", "per day", "daily", "spend", "prepay", "credit balance"))
+
+
 def gemini_json(client: httpx.Client, prompt_text: str, schema: dict, max_tokens: int,
                 model: str | None = None) -> tuple[dict, dict]:
     """글만 보내고 정해진 형식(JSON)으로 답을 받음. (답, 사용 토큰) 반환. 한도·과부하는 기다렸다 재시도."""
@@ -406,8 +444,8 @@ def gemini_json(client: httpx.Client, prompt_text: str, schema: dict, max_tokens
     if _thinking_cfg_ok:
         gen["thinkingConfig"] = {"thinkingLevel": "minimal"}
     body = {"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": gen}
-    last = ""
-    for wait in (0, 10, 30, 60):
+    last, wait = "", 0.0
+    for attempt in range(len(RETRY_WAITS) + 1):
         if wait:
             time.sleep(wait)
         r = client.post(f"{GEMINI_BASE}/models/{model}:generateContent",
@@ -420,7 +458,14 @@ def gemini_json(client: httpx.Client, prompt_text: str, schema: dict, max_tokens
         if r.status_code in (401, 402, 403):
             raise QuotaError(f"gemini {r.status_code}: {r.text[:200]}", r.status_code)
         if r.status_code == 429 or r.status_code >= 500:
-            last = f"gemini {r.status_code}"
+            msg = error_text(r)
+            last = f"gemini {r.status_code}: {msg}"
+            if r.status_code == 429 and is_daily_or_billing(r):
+                raise QuotaError(last, 429)          # 하루 한도·결제 한도 → 기다려도 안 풀림, 바로 멈춤
+            if attempt >= len(RETRY_WAITS):
+                break
+            wait = retry_delay(r, RETRY_WAITS[attempt])
+            log.warning("gemini %s → %ds 후 재시도 (%s)", r.status_code, wait, msg[:120])
             continue
         r.raise_for_status()
         data = r.json()

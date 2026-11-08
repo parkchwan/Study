@@ -42,16 +42,24 @@ def embed_texts(client: httpx.Client, texts: list[str], task: str) -> list[list[
     model = settings.embed_model
     body = {"requests": [{"model": f"models/{model}", "content": {"parts": [{"text": t}]},
                           "taskType": task, "outputDimensionality": DIM} for t in texts]}
-    for wait in (0, 10, 30, 60):
+    from .vision import RETRY_WAITS, error_text, is_daily_or_billing, retry_delay
+    last, wait = "", 0.0
+    for attempt in range(len(RETRY_WAITS) + 1):
         if wait:
             time.sleep(wait)
         r = client.post(f"{GEMINI_BASE}/models/{model}:batchEmbedContents",
                         headers={"x-goog-api-key": settings.gemini_api_key}, json=body)
         if r.status_code == 429 or r.status_code >= 500:
+            msg = error_text(r)
+            last = f"임베딩 {r.status_code}: {msg}"
+            if (r.status_code == 429 and is_daily_or_billing(r)) or attempt >= len(RETRY_WAITS):
+                break
+            wait = retry_delay(r, RETRY_WAITS[attempt])
+            log.warning("임베딩 %s → %ds 후 재시도 (%s)", r.status_code, wait, msg[:120])
             continue
         r.raise_for_status()
         return [e["values"] for e in r.json()["embeddings"]]
-    raise RuntimeError("임베딩 응답 없음 (한도/서버 과부하)")
+    raise RuntimeError(last or "임베딩 응답 없음 (한도/서버 과부하)")
 
 
 def enabled() -> bool:

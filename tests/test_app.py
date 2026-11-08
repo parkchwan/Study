@@ -632,3 +632,28 @@ def test_rerank_endpoint(env, monkeypatch):
     monkeypatch.setattr(rerank, "gemini_json", lambda c, p, s, mx, model=None: ({"order": [1, 0]}, {"in": 1, "out": 1}))
     r = TestClient(m.app).post("/api/rerank", json={"q": "기온에 따른 강도", "cands": ["a", "b"]})
     assert r.status_code == 200 and r.json()["order"] == [1, 0]
+
+
+def test_429_minute_waits_day_stops(monkeypatch):
+    import httpx
+    from app import vision, config
+    monkeypatch.setattr(config.settings, "gemini_api_key", "k")
+    waits = []; monkeypatch.setattr(vision.time, "sleep", waits.append)
+    minute = {"error": {"code": 429, "message": "You exceeded your current quota, please check your plan and billing details.",
+                        "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+                            {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel"}]},
+                                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "21s"}]}}
+    n = {"c": 0}
+    def h(req):
+        n["c"] += 1
+        if n["c"] <= 2: return httpx.Response(429, json=minute)
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"order":[0]}'}]}}],
+                                         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2}})
+    c = httpx.Client(transport=httpx.MockTransport(h))
+    data, usage = vision.gemini_json(c, "q", {}, 10, "m")
+    assert data == {"order": [0]} and waits == [22.0, 22.0] and usage == {"in": 5, "out": 2}
+    day = {"error": {"code": 429, "message": "quota", "details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}]}]}}
+    c2 = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(429, json=day)))
+    import pytest
+    with pytest.raises(vision.QuotaError):
+        vision.gemini_json(c2, "q", {}, 10, "m")
