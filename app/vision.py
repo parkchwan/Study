@@ -436,14 +436,17 @@ def is_daily_or_billing(r: httpx.Response) -> bool:
 
 
 def gemini_json(client: httpx.Client, prompt_text: str, schema: dict, max_tokens: int,
-                model: str | None = None) -> tuple[dict, dict]:
+                model: str | None = None, image_jpeg: bytes | None = None) -> tuple[dict, dict]:
     """글만 보내고 정해진 형식(JSON)으로 답을 받음. (답, 사용 토큰) 반환. 한도·과부하는 기다렸다 재시도."""
     model = model or settings.gemini_model
     gen = {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0.1,
            "maxOutputTokens": max_tokens}
     if _thinking_cfg_ok:
         gen["thinkingConfig"] = {"thinkingLevel": "minimal"}
-    body = {"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": gen}
+    parts = [{"text": prompt_text}]
+    if image_jpeg:
+        parts.insert(0, {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(image_jpeg).decode()}})
+    body = {"contents": [{"parts": parts}], "generationConfig": gen}
     last, wait = "", 0.0
     for attempt in range(len(RETRY_WAITS) + 1):
         if wait:

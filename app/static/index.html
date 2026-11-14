@@ -20,6 +20,10 @@
            padding: 12px 16px; display: grid; gap: 10px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   h1 { font-size: 17px; margin: 0 12px 0 0; }
+  /* 검색 칸: 글이 길면 저절로 늘어나고(최대 6줄), 오른쪽 아래 모서리를 끌어 크기 조절 가능 */
+  textarea#q { flex: 1; min-width: 180px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
+               background: var(--bg); color: var(--text); font: inherit; font-size: 15px; line-height: 1.4;
+               resize: vertical; min-height: 40px; max-height: 60vh; overflow-y: auto; }
   input[type=text] { flex: 1; min-width: 180px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
                      background: var(--bg); color: var(--text); font-size: 15px; }
   button { padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
@@ -93,7 +97,9 @@
     <span class="status" id="status">불러오는 중…</span>
   </div>
   <div class="row">
-    <input id="q" type="text" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp, 필기한 단어">
+    <textarea id="q" rows="1" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp, 필기한 단어"></textarea>
+    <button id="camBtn" hidden title="문제를 찍거나 사진을 고르면 AI가 문제를 읽고 관련 자료를 찾아 줌 (1번에 약 2원)">📷 문제로 검색</button>
+    <input id="camInput" type="file" accept="image/*" hidden>
     <button id="aiBtn" hidden title="상위 결과를 AI가 질문의 뜻에 맞게 다시 골라 줌 (검색 1번에 약 1원)">🎯 AI 정밀 검색: 끔</button>
   </div>
   <div class="chips" id="chips"></div>
@@ -145,6 +151,18 @@ function renderChips() {
 $("chips").onclick = e => { const k = e.target.dataset.k; if (k === undefined) return; state.kind = k; renderChips(); search(); };
 
 let timer, seq = 0;
+// 검색 칸 높이를 내용에 맞춤 (사용자가 모서리로 직접 늘린 높이는 존중)
+let qManual = false;
+function fitQ() {
+  const t = $("q"); if (qManual) return;
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight + 2, parseFloat(getComputedStyle(t).lineHeight) * 6 + 22) + "px";
+}
+$("q").addEventListener("mousedown", e => {        // 모서리를 잡고 끄는 경우
+  const r = $("q").getBoundingClientRect(); if (e.clientX > r.right - 20 && e.clientY > r.bottom - 20) qManual = true;
+});
+$("q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); clearTimeout(timer); state.q = $("q").value.trim(); search(); } });
+$("q").addEventListener("input", fitQ);
 $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("q").value.trim(); search(); }, 150); };
 
 const PAGE_CHUNK = 120;          // 결과 카드는 120개씩 나눠 그림 → 결과가 수천 개여도 바로 뜸
@@ -444,7 +462,10 @@ function rank(q, kind, qv) {
   // (낱말 하나짜리 검색은 해당 없음: '철근콘크리트'만 쳐서 수백 쪽이 전부 '정확히 일치'가 되는 걸 막음)
   const nTok = q.trim().split(/\s+/).filter(Boolean).length;
   const multi = nTok >= 3 || (nTok >= 2 && phrase.length >= 10);     // 문장·구절로 검색했을 때만
-  const exactOf = p => multi && (p.hayN.includes(phrase) || (phrase2.length >= 6 && p.hayN.includes(phrase2)));
+  // 문제 문장의 앞부분(쉼표·'과/와/및' 앞)만 그대로 있어도 일치로 봄: "…발생원인과 보수공법" ↔ "…발생원인, 보수.보강공법"
+  const lead = norm(q.split(/,|，|·|\s및\s|(?<=[가-힣])[과와]\s/)[0]);
+  const exactOf = p => multi && (p.hayN.includes(phrase) || (phrase2.length >= 6 && p.hayN.includes(phrase2))
+                                 || (lead.length >= 12 && lead !== phrase && p.hayN.includes(lead)));
   const out = [];
   pages.forEach((p, i) => {
     const h = hits[i];
@@ -517,6 +538,7 @@ function keyBar(msg) {      // 태블릿: 의미 검색용 키를 이 기기에�
 function aiAvail() { return !!(DATA && DATA.meta.ai && (DATA.meta.ai.rerank || (STATIC_MODE && getKey()))); }
 function aiOn() { try { return aiAvail() && localStorage.getItem("ai_precise") === "1"; } catch (e) { return false; } }
 function aiButton() {
+  $("camBtn").hidden = !aiAvail();
   const b = $("aiBtn"); b.hidden = !aiAvail();
   b.classList.toggle("on", aiOn()); b.textContent = `🎯 AI 정밀 검색: ${aiOn() ? "켬" : "끔"}`;
 }
@@ -588,6 +610,65 @@ async function callRerank(q, texts) {
   }
   return null;
 }
+// ── 📷 문제로 검색: 사진 속 문제를 AI가 읽고 → 검색창에 넣어 바로 검색 ──
+const PHOTO_PROMPT = "사진은 건축시공기술사 시험 문제지나 교재·필기의 일부다. 사진 속 문제(또는 가장 중심이 되는 제목)를 읽고 "
+  + "JSON으로 답하라. question: 문제 문장을 사진에 쓰인 그대로(번호·배점 제외, 80자 이내). "
+  + "query: 이 문제의 답이 될 자료를 찾기 위한 핵심 주제 구절(30자 이내). keywords: 핵심어 3~6개. "
+  + "글씨가 없거나 읽을 수 없으면 question을 빈 문자열로.";   // app/photo.py 와 같은 내용
+function shrinkImage(file, max = 1280) {
+  return new Promise((ok, bad) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const s = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas"); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      ok(c.toDataURL("image/jpeg", 0.85).split(",")[1]);
+    };
+    img.onerror = bad; img.src = url;
+  });
+}
+async function readQuestion(b64) {
+  const ai = DATA.meta.ai;
+  if (ai.photo) {
+    const r = await fetch(ai.photo, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image: b64 }) });
+    if (!r.ok) { let d = ""; try { d = (await r.json()).detail; } catch (e) {} throw new Error(d || `오류 ${r.status}`); }
+    return r.json();
+  }
+  const key = getKey(); if (!key) throw new Error("키 없음");
+  let why = "";
+  for (const model of await rerankModels(key, ai.model)) {
+    const gen = { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: 400,
+      responseSchema: { type: "OBJECT", properties: { question: { type: "STRING" }, query: { type: "STRING" },
+        keywords: { type: "ARRAY", items: { type: "STRING" } } }, required: ["question", "query", "keywords"] },
+      thinkingConfig: { thinkingLevel: "minimal" } };
+    for (let t = 0; t < 2; t++) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: "image/jpeg", data: b64 } }, { text: PHOTO_PROMPT }] }],
+                               generationConfig: gen }) });
+      if (r.status === 400 && gen.thinkingConfig) { delete gen.thinkingConfig; continue; }
+      if (!r.ok) { why = { 429: "사용 한도 초과", 402: "결제 확인 필요", 403: "키 권한 없음" }[r.status] || `오류 ${r.status}`; break; }
+      const parts = ((await r.json()).candidates || [{}])[0].content?.parts || [];
+      const txt = parts.filter(x => !x.thought).map(x => x.text || "").join("");
+      return JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
+    }
+  }
+  throw new Error(why || "사진을 읽지 못함");
+}
+$("camBtn").onclick = () => $("camInput").click();
+$("camInput").onchange = async () => {
+  const f = $("camInput").files[0]; $("camInput").value = "";
+  if (!f) return;
+  $("count").textContent = "📷 사진 속 문제를 읽는 중…";
+  try {
+    const r = await readQuestion(await shrinkImage(f));
+    const q = (r.question && r.question.length <= 80 ? r.question : r.query || r.question || "").trim();
+    if (!q) { $("count").textContent = "📷 사진에서 문제를 찾지 못했어요. 문제 부분이 잘 보이게 다시 찍어 주세요."; return; }
+    $("q").value = q; state.q = q; qManual = false; fitQ();
+    try { localStorage.setItem("ai_precise", "1"); } catch (e) {}   // 사진 검색은 AI 정밀 검색까지 켜서 정확도 우선
+    aiButton(); search(); window.scrollTo(0, 0);
+  } catch (e) { $("count").textContent = `📷 사진 검색 실패: ${e.message}`; }
+};
 const rrCache = new Map();
 async function aiRerank(q, results, my) {
   const cands = results.filter(p => !p._exact).slice(0, 30);

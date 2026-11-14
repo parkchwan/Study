@@ -704,3 +704,18 @@ def test_full_body_text_and_watermark_title(env):
     data = json.loads((out / "data.json").read_text(encoding="utf-8"))
     assert "준공된 철근콘크리트 구조물의 균열 발생원인" in text["Q_1"][0]      # 페이지 중간(1000자 뒤)도 검색 대상
     assert data["pages"][0][3][0][1] == "균열의 원인과 대책"                  # 워터마크 제목 → 받아 적은 첫 줄
+
+
+def test_photo_query_endpoint(env, monkeypatch):
+    import base64
+    tmp, db, job, settings = env
+    from fastapi.testclient import TestClient
+    import importlib, app.main as m
+    from app import photo
+    importlib.reload(m)
+    monkeypatch.setattr(settings, "gemini_api_key", "g")
+    monkeypatch.setattr(photo, "gemini_json", lambda c, p, s, mx, model=None, image_jpeg=None:
+                        ({"question": "균열 발생 원인", "query": "균열 원인", "keywords": ["균열"]}, {"in": 1, "out": 1})
+                        if image_jpeg else ({}, {}))
+    r = TestClient(m.app).post("/api/photo_query", json={"image": base64.b64encode(b"jpg").decode()})
+    assert r.status_code == 200 and r.json()["question"] == "균열 발생 원인"

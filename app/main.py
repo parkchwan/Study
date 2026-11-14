@@ -120,6 +120,7 @@ def _cached_payload():
         data, texts, thes = build_payload(db)
         data["meta"].update({"text": "/api/text", "thesaurus": "/api/thesaurus"})
         data["meta"]["ai"]["rerank"] = "/api/rerank"
+        data["meta"]["ai"]["photo"] = "/api/photo_query"
         blob = db.embedding_blob([p[0] for p in data["pages"]], embed.DIM)
         if any(blob):
             data["meta"]["embed"] = {"file": "/api/embeddings", "dim": embed.DIM, "model": settings.embed_model,
@@ -152,6 +153,24 @@ def api_embeddings():
 class RerankReq(BaseModel):
     q: str
     cands: list[str]
+
+
+class PhotoReq(BaseModel):
+    image: str      # JPEG base64
+
+
+@app.post("/api/photo_query")
+def api_photo_query(req: PhotoReq):
+    """PC 화면용 📷 문제로 검색: 사진 속 문제를 읽어 검색어로."""
+    import base64
+    from . import photo
+    if not settings.gemini_api_key:
+        raise HTTPException(400, "Gemini 키 없음")
+    try:
+        return photo.read_question(base64.b64decode(req.image), db.get_meta("gemini_model") or None)
+    except Exception as e:
+        msg = str(e)
+        raise HTTPException(503, "사용 한도 초과" if "429" in msg else "결제 확인 필요" if "402" in msg else "사진을 읽지 못함")
 
 
 @app.post("/api/rerank")
