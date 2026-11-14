@@ -48,6 +48,23 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/manifest.webmanifest")
+def pwa_manifest():
+    return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def pwa_sw():
+    return FileResponse(STATIC / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/icon-{size}.png")
+def pwa_icon(size: int):
+    if size not in (192, 512):
+        raise HTTPException(404)
+    return FileResponse(STATIC / f"icon-{size}.png")
+
+
 @app.get("/pdf.html")
 def pdf_viewer():
     return FileResponse(STATIC / "pdf.html")

@@ -719,3 +719,21 @@ def test_photo_query_endpoint(env, monkeypatch):
                         if image_jpeg else ({}, {}))
     r = TestClient(m.app).post("/api/photo_query", json={"image": base64.b64encode(b"jpg").decode()})
     assert r.status_code == 200 and r.json()["question"] == "균열 발생 원인"
+
+
+def test_pwa_files_exported_and_served(env):
+    import json
+    tmp, db, job, settings = env
+    from app.export import export_site
+    pdf = tmp / "d.pdf"; make_pdf(pdf)
+    job.index_local_file({"file_id": "P", "name": "p.pdf", "mime_type": "application/pdf", "path": "/",
+                          "web_link": "", "version_key": "1"}, pdf, None)
+    out = tmp / "web"; export_site(db, out)
+    m = json.loads((out / "manifest.webmanifest").read_text(encoding="utf-8"))
+    assert m["share_target"]["action"] == "./share" and (out / "sw.js").exists() and (out / "icon-512.png").exists()
+    from fastapi.testclient import TestClient
+    import importlib, app.main as mm
+    importlib.reload(mm)
+    c = TestClient(mm.app)
+    assert c.get("/manifest.webmanifest").status_code == 200 and c.get("/sw.js").status_code == 200
+    assert c.get("/icon-192.png").status_code == 200 and c.get("/icon-7.png").status_code == 404

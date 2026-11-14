@@ -99,9 +99,10 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
 def _copy_viewer(out_dir: Path) -> None:
     """원본 PDF 보기 화면(pdf.html + pdf.js)을 함께 내보냄."""
     (out_dir / "pdfjs").mkdir(exist_ok=True)
-    for rel in ("pdf.html", "pdfjs/pdf.min.js", "pdfjs/pdf.worker.min.js", "pdfjs/LICENSE"):
+    for rel in ("pdf.html", "pdfjs/pdf.min.js", "pdfjs/pdf.worker.min.js", "pdfjs/LICENSE",
+                "manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png"):
         s, d = STATIC / rel, out_dir / rel
-        if not d.exists() or d.stat().st_size != s.stat().st_size or rel == "pdf.html":
+        if not d.exists() or d.stat().st_size != s.stat().st_size or rel in ("pdf.html", "sw.js", "manifest.webmanifest"):
             shutil.copyfile(s, d)
 
 

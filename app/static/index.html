@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drive 시각자료 색인</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
+<link rel="icon" href="icon-192.png">
 <style>
   :root {
     --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #e4e7ec;
@@ -100,6 +103,7 @@
     <textarea id="q" rows="1" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp, 필기한 단어"></textarea>
     <button id="camBtn" hidden title="문제를 찍거나 사진을 고르면 AI가 문제를 읽고 관련 자료를 찾아 줌 (1번에 약 2원)">📷 문제로 검색</button>
     <input id="camInput" type="file" accept="image/*" hidden>
+    <button id="installBtn" hidden title="태블릿에 앱으로 설치하면 어느 화면에서든 '공유 → 시각자료 색인'으로 검색">📲 앱으로 설치</button>
     <button id="aiBtn" hidden title="상위 결과를 AI가 질문의 뜻에 맞게 다시 골라 줌 (검색 1번에 약 1원)">🎯 AI 정밀 검색: 끔</button>
   </div>
   <div class="chips" id="chips"></div>
@@ -611,10 +615,11 @@ async function callRerank(q, texts) {
   return null;
 }
 // ── 📷 문제로 검색: 사진 속 문제를 AI가 읽고 → 검색창에 넣어 바로 검색 ──
-const PHOTO_PROMPT = "사진은 건축시공기술사 시험 문제지나 교재·필기의 일부다. 사진 속 문제(또는 가장 중심이 되는 제목)를 읽고 "
-  + "JSON으로 답하라. question: 문제 문장을 사진에 쓰인 그대로(번호·배점 제외, 80자 이내). "
-  + "query: 이 문제의 답이 될 자료를 찾기 위한 핵심 주제 구절(30자 이내). keywords: 핵심어 3~6개. "
-  + "글씨가 없거나 읽을 수 없으면 question을 빈 문자열로.";   // app/photo.py 와 같은 내용
+const PHOTO_PROMPT = "이미지는 건축시공기술사 시험 문제, 교재·필기의 일부, 또는 도면·그림·사진이다. JSON으로 답하라. "
+  + "문제나 제목 글이 있으면 question: 그 문장을 쓰인 그대로(번호·배점 제외, 80자 이내). "
+  + "글이 거의 없는 그림·도면·사진이면 question: 그림이 무엇을 나타내는지 건설 용어로 한 문장(예: '흙막이 벽체 단면과 지하수위'). "
+  + "query: 이 문제나 그림과 관련된 자료를 찾기 위한 핵심 주제 구절(30자 이내). keywords: 핵심어 3~6개(공법·부재·현상 이름). "
+  + "건설과 무관하거나 알아볼 수 없으면 question을 빈 문자열로.";   // app/photo.py 와 같은 내용
 function shrinkImage(file, max = 1280) {
   return new Promise((ok, bad) => {
     const img = new Image(), url = URL.createObjectURL(file);
@@ -656,19 +661,37 @@ async function readQuestion(b64) {
   throw new Error(why || "사진을 읽지 못함");
 }
 $("camBtn").onclick = () => $("camInput").click();
-$("camInput").onchange = async () => {
-  const f = $("camInput").files[0]; $("camInput").value = "";
-  if (!f) return;
-  $("count").textContent = "📷 사진 속 문제를 읽는 중…";
+$("installBtn").onclick = async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $("installBtn").hidden = true; };
+$("camInput").onchange = () => { const f = $("camInput").files[0]; $("camInput").value = ""; if (f) searchByImage(f); };
+async function searchByImage(f) {
+  $("count").textContent = "📷 사진 속 문제·그림을 읽는 중…";
   try {
     const r = await readQuestion(await shrinkImage(f));
     const q = (r.question && r.question.length <= 80 ? r.question : r.query || r.question || "").trim();
-    if (!q) { $("count").textContent = "📷 사진에서 문제를 찾지 못했어요. 문제 부분이 잘 보이게 다시 찍어 주세요."; return; }
+    if (!q) { $("count").textContent = "📷 사진에서 문제나 그림 내용을 찾지 못했어요. 잘 보이게 다시 찍어 주세요."; return; }
     $("q").value = q; state.q = q; qManual = false; fitQ();
     try { localStorage.setItem("ai_precise", "1"); } catch (e) {}   // 사진 검색은 AI 정밀 검색까지 켜서 정확도 우선
     aiButton(); search(); window.scrollTo(0, 0);
   } catch (e) { $("count").textContent = `📷 사진 검색 실패: ${e.message}`; }
-};
+}
+// ── 다른 앱에서 '공유 → 시각자료 색인'으로 받은 글자·사진 처리 (sw.js가 넘겨 줌) ──
+async function handleShare() {
+  const P = new URLSearchParams(location.search), kind = P.get("share");
+  if (!kind) return;
+  history.replaceState(null, "", location.pathname);           // 새로고침해도 다시 실행되지 않게
+  if (kind === "image") {
+    try {
+      const box = await caches.open("share-inbox"), r = await box.match("shared-image");
+      if (r) { const blob = await r.blob(); await box.delete("shared-image"); return searchByImage(blob); }
+    } catch (e) {}
+  }
+  const t = (P.get("text") || "").replace(/https?:\/\/\S+/g, "").trim();
+  if (t) { $("q").value = t; state.q = t; qManual = false; fitQ(); search(); }
+}
+// 앱으로 설치(PWA): 설치하면 '공유' 메뉴에 나타남. https 또는 localhost에서만 가능
+let installEvt = null;
+addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvt = e; $("installBtn").hidden = false; });
+if ("serviceWorker" in navigator && isSecureContext) navigator.serviceWorker.register("sw.js").catch(() => {});
 const rrCache = new Map();
 async function aiRerank(q, results, my) {
   const cands = results.filter(p => !p._exact).slice(0, 30);
@@ -712,6 +735,7 @@ async function loadAll() {
     else EMB = null;
     const res = await Promise.allSettled(jobs);
     prepare(); aiButton(); search(); keyBar();
+    handleShare();
     if (STATIC_MODE) $("status").textContent = head + (res[0].status === "rejected" ? " · 본문 검색 불가(그림 설명만 검색)" : "");
   } finally { loading = false; }
 }
