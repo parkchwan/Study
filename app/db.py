@@ -228,7 +228,9 @@ class DB:
                 "page_key": r["page_key"], "page_no": r["page_no"], "width": r["width"], "height": r["height"],
                 "file_name": r["file_name"], "path": r["path"], "web_link": r["web_link"],
                 "page_count": r["page_count"], "v": img_version(r["version_key"]),
-                "t": " ".join(x for x in (r["file_name"], r["path"], (r["text"] or "")[:1000]) if x).lower(),
+                # 본문 글자: 페이지 중간에 있는 문제·제목도 찾도록 3000자까지 (공백은 하나로 줄여 크기 절약)
+                "t": " ".join(x for x in (r["file_name"], r["path"],
+                                         " ".join((r["text"] or "").split())[:3000]) if x).lower(),
                 "items": []}
             if with_text:
                 out[r["page_key"]]["text"] = r["text"] or ""

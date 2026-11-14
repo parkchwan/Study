@@ -153,7 +153,8 @@ function cardHtml(p, i) {
   const first = p.items[0] || {};
   const tags = [...new Set(p.items.map(it => KINDS[it.kind] || it.kind))].map(t => `<span class="tag">${esc(t)}</span>`).join("")
     + (p._sem ? `<span class="tag sem" title="단어는 다르지만 뜻이 비슷한 결과">뜻 비슷</span>` : "")
-    + (p._ai ? `<span class="tag ai" title="AI가 질문의 뜻에 맞다고 고른 결과">AI 추천</span>` : "");
+    + (p._ai ? `<span class="tag ai" title="AI가 질문의 뜻에 맞다고 고른 결과">AI 추천</span>` : "")
+    + (p._exact ? `<span class="tag ai" style="background:#16a34a;color:#fff" title="입력한 문장이 그대로 들어 있음">정확히 일치</span>` : "");
   return `<div class="card" data-i="${i}">
     <img loading="lazy" src="${imgUrl("thumbs", p)}" alt="">
     <div class="meta"><div>${tags}</div>
@@ -194,9 +195,11 @@ function showResults(results, keepWeak) {
   const strong = results.filter(p => !p._weak), weak = results.length - strong.length;
   state.results = weakShown ? results : strong;
   $("empty").hidden = results.length > 0;
-  const sem = state.results.filter(p => p._sem).length, ai = results.filter(p => p._ai).length;
+  const sem = state.results.filter(p => p._sem).length, ai = results.filter(p => p._ai).length,
+        exa = results.filter(p => p._exact).length;
   $("count").innerHTML = !state.q ? (results.length ? `전체 ${results.length}쪽` : "") : results.length
-    ? (ai ? `🎯 AI가 고른 결과 ${ai}쪽` : `관련 높은 결과 ${strong.length}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`)
+    ? (exa ? `✅ 정확히 일치 ${exa}쪽 · ` : "")
+      + (ai ? `🎯 AI가 고른 결과 ${ai}쪽` : `관련 높은 결과 ${strong.length - exa}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`)
       + (weak ? ` · <a href="#" id="weakLink">${weakShown ? "관련도 낮은 결과 숨기기" : `관련도 낮은 결과 ${weak}쪽 더 보기`}</a>` : "")
     : "";
   const wl = document.getElementById("weakLink");
@@ -436,9 +439,16 @@ function rank(q, kind, qv) {
     const sorted = [...sims].sort((a, b) => b - a);
     simCut = Math.max(0.5, (sorted[0] || 0) - 0.15, sorted[Math.min(59, sorted.length - 1)] || 0);
   }
+  // 입력한 문장이 띄어쓰기만 다르고 그대로 들어 있는 페이지 = '정확히 일치' (항상 맨 위)
+  const phrase = norm(q), phrase2 = units.map(u => u.text).join("");
+  // (낱말 하나짜리 검색은 해당 없음: '철근콘크리트'만 쳐서 수백 쪽이 전부 '정확히 일치'가 되는 걸 막음)
+  const nTok = q.trim().split(/\s+/).filter(Boolean).length;
+  const multi = nTok >= 3 || (nTok >= 2 && phrase.length >= 10);     // 문장·구절로 검색했을 때만
+  const exactOf = p => multi && (p.hayN.includes(phrase) || (phrase2.length >= 6 && p.hayN.includes(phrase2)));
   const out = [];
   pages.forEach((p, i) => {
     const h = hits[i];
+    if (exactOf(p)) { out.push({ ...view(p), _lex: 99, _simv: 0, _exact: true, _i: i }); return; }
     const cov = h.reduce((a, x, k) => a + (x ? w[k] * (x === 2 ? 1 : 0.85) : 0), 0) / W;
     const sim = sims ? Math.max(0, sims[i]) : 0;
     const all = h.every(x => x > 0);
@@ -458,14 +468,15 @@ function rank(q, kind, qv) {
   // 3) 최종 점수: 글자 맞음(+가까움)과 뜻의 가까움을 반반 → 문맥이 맞는 페이지가 위로
   const maxL = Math.max(0.0001, ...out.map(r => r._lex)), maxS = Math.max(0.0001, ...out.map(r => r._simv));
   // (뜻이 아주 가까우면 단어가 달라도 위로: 의미 점수만으로도 높은 자리에 올 수 있게)
-  out.forEach(r => { r._score = sims ? Math.max(0.5 * r._lex / maxL + 0.5 * r._simv / maxS, 0.8 * r._simv / maxS)
-                                     : r._lex / maxL; });
+  const maxL2 = Math.max(0.0001, ...out.filter(r => !r._exact).map(r => r._lex));
+  out.forEach(r => { r._score = r._exact ? 10 + r._lex
+    : sims ? Math.max(0.5 * r._lex / maxL2 + 0.5 * r._simv / maxS, 0.8 * r._simv / maxS) : r._lex / maxL2; });
   out.sort((a, b) => b._score - a._score || a._i - b._i);
   // 4) 관련도가 확 떨어지는 지점 아래는 '관련도 낮은 결과'로 접어 둠
-  const top = out.length ? out[0]._score : 0;
+  const top = (out.find(r => !r._exact) || { _score: 0 })._score;   // '정확히 일치'는 기준 계산에서 제외
   // 의미 검색이 없으면 글자 점수뿐이라 기준을 더 엄격하게 (핵심어가 가까이 붙은 페이지만 '관련 높음')
   const cut = sims ? 0.55 : 0.8;
-  out.forEach(r => { r._weak = r._score < top * cut; });
+  out.forEach(r => { r._weak = !r._exact && r._score < top * cut; });
   return out;
 }
 // 의미 검색용 검색어 벡터: PC는 서버가, 태블릿은 그 기기에 저장한 키로 Gemini에 직접 요청
@@ -579,7 +590,7 @@ async function callRerank(q, texts) {
 }
 const rrCache = new Map();
 async function aiRerank(q, results, my) {
-  const cands = results.slice(0, 30);
+  const cands = results.filter(p => !p._exact).slice(0, 30);
   if (cands.length < 2) return null;
   const ck = `${q}|${state.kind}|${cands.map(p => p.page_key).join(",")}`;
   let order = rrCache.get(ck);
@@ -591,10 +602,14 @@ async function aiRerank(q, results, my) {
     order = order.filter(i => Number.isInteger(i) && i >= 0 && i < cands.length);
     rrCache.set(ck, order);
   }
-  if (!order.length) return null;
+  const exact = results.filter(p => p._exact);                     // '정확히 일치'는 AI와 상관없이 맨 위 고정
+  const ex = new Set(exact.map(p => p.page_key));
+  order = order.filter(i => !ex.has(cands[i].page_key));
+  if (!order.length && !exact.length) return null;
   const picked = new Set(order.map(i => cands[i].page_key));
-  return [...order.map(i => ({ ...cands[i], _ai: true, _weak: false })),
-          ...results.filter(p => !picked.has(p.page_key)).map(p => ({ ...p, _ai: false, _weak: true }))];
+  return [...exact.map(p => ({ ...p, _weak: false })),
+          ...order.map(i => ({ ...cands[i], _ai: true, _weak: false })),
+          ...results.filter(p => !picked.has(p.page_key) && !ex.has(p.page_key)).map(p => ({ ...p, _ai: false, _weak: true }))];
 }
 function countKinds() {
   state.byKind = {};

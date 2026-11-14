@@ -688,3 +688,19 @@ def test_embedding_pace_stays_under_limits():
     for t0, _, _ in p.sent:
         win = [x for x in p.sent if t0 <= x[0] < t0 + 60]
         assert sum(x[1] for x in win) <= 1000 and sum(x[2] for x in win) <= 10
+
+
+def test_full_body_text_and_watermark_title(env):
+    import json
+    tmp, db, job, settings = env
+    from app.export import export_site
+    body = ("말뚝 머리 보강 " * 150) + "문제 2) 준공된 철근콘크리트 구조물의 균열 발생원인"
+    db.save_file({"file_id": "Q", "name": "q.pdf", "mime_type": "application/pdf", "path": "/", "web_link": "", "version_key": "1"},
+                 [{"page_key": "Q_1", "page_no": 1, "width": 1, "height": 1, "text": body,
+                   "items": [{"kind": "handwriting", "title": "archifoli 워터마크", "description": "균열의 원인과 대책\n건조수축",
+                              "keywords": []}]}])
+    out = tmp / "web"; export_site(db, out)
+    text = json.loads((out / "text.json").read_text(encoding="utf-8"))
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    assert "준공된 철근콘크리트 구조물의 균열 발생원인" in text["Q_1"][0]      # 페이지 중간(1000자 뒤)도 검색 대상
+    assert data["pages"][0][3][0][1] == "균열의 원인과 대책"                  # 워터마크 제목 → 받아 적은 첫 줄

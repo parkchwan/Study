@@ -47,6 +47,16 @@ def original_name(p: dict) -> str:
     return f"{p['file_id']}{ext}" if ext in ORIGINAL_EXTS else ""
 
 
+def fix_title(it: dict) -> dict:
+    """손글씨 항목 제목이 워터마크·로고로 잘못 붙은 경우 → 받아 적은 내용 첫 줄로 바꿈."""
+    from .vision import _JUNK
+    title = str(it.get("title") or "")
+    if it.get("kind") == "handwriting" and any(w in title.lower() for w in _JUNK):
+        first = next((l.strip() for l in str(it.get("description") or "").splitlines() if l.strip()), "")
+        it = dict(it, title=first[:40] or "손글씨 필기")
+    return it
+
+
 def build_payload(db: DB) -> tuple[dict, dict, list]:
     """(data, text, thesaurus): 화면이 쓰는 데이터. NAS 내보내기와 PC 화면이 같은 것을 씀."""
     from . import thesaurus
@@ -56,7 +66,7 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     pages = []
     for p in db.export_pages(with_text=True):
         toc = looks_like_toc(p.pop("text", ""))
-        items = [it for it in p["items"] if not is_junk(it) and not (toc and it["kind"] != "handwriting")]
+        items = [fix_title(it) for it in p["items"] if not is_junk(it) and not (toc and it["kind"] != "handwriting")]
         if items:
             p["items"] = items
             pages.append(p)
