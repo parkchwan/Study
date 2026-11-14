@@ -119,15 +119,15 @@
 
 <div class="viewer" id="viewer">
   <div class="vbar">
-    <button id="prev" title="이전 검색 결과 (Shift+←)">← 이전 결과</button><button id="next" title="다음 검색 결과 (Shift+→)">다음 결과 →</button>
+    <button id="prev" title="같은 책 앞 쪽 (Shift+←)">‹ 앞 쪽</button><button id="next" title="같은 책 뒤 쪽 (Shift+→)">뒤 쪽 ›</button>
     <span class="vinfo" id="vsub"></span>
     <a id="vorig" class="btn" target="_blank" rel="noopener">원본 열기 ↗</a>
     <button id="vinfoBtn" title="AI 설명 보기">ⓘ</button>
     <button id="close" title="닫기 (Esc)">✕</button>
   </div>
   <div class="stage" id="stage"><img id="vimg" alt=""><canvas id="vcanvas" hidden></canvas></div>
-  <button class="edge left" id="prev2" aria-label="같은 책 앞 쪽" title="같은 책 앞 쪽 (←)">‹</button>
-  <button class="edge right" id="next2" aria-label="같은 책 뒤 쪽" title="같은 책 뒤 쪽 (→)">›</button>
+  <button class="edge left" id="prev2" aria-label="이전 검색 결과" title="이전 검색 결과 (←)">‹</button>
+  <button class="edge right" id="next2" aria-label="다음 검색 결과" title="다음 검색 결과 (→)">›</button>
   <aside class="side" id="side" hidden>
     <h2 id="vtitle"></h2>
     <div class="timing" id="vtime"></div>
@@ -281,19 +281,24 @@ function openViewer(i) {
 }
 function closeViewer() { $("viewer").classList.remove("open"); state.cur = -1; }
 $("close").onclick = closeViewer;
-$("prev").onclick = () => openViewer(state.cur - 1);
-$("next").onclick = () => openViewer(state.cur + 1);
-$("prev2").onclick = () => showDocPage(doc.page - 1);
-$("next2").onclick = () => showDocPage(doc.page + 1);
+// 위쪽 버튼 = 같은 책 앞뒤 쪽, 양옆 큰 버튼·손가락 밀기 = 검색 결과 넘기기
+$("prev").onclick = () => showDocPage(doc.page - 1);
+$("next").onclick = () => showDocPage(doc.page + 1);
+$("prev2").onclick = () => openViewer(state.cur - 1);
+$("next2").onclick = () => openViewer(state.cur + 1);
 // ── 같은 책(PDF)의 앞뒤 쪽 넘기기: 색인된 쪽은 미리 만든 이미지, 아닌 쪽은 원본 PDF에서 그 쪽만 받아 그림 ──
 const doc = { p: null, page: 0, pdfs: new Map(), busy: 0 };
 function fileIdOf(p) { return p.page_key.slice(0, p.page_key.lastIndexOf("_")); }
 function edgeState() {
   const p = doc.p; if (!p) return;
   const canPdf = p.orig && /\.pdf$/i.test(p.orig);
-  $("prev2").disabled = doc.page <= 1 || (!canPdf && !pageImg(p, doc.page - 1));
-  $("next2").disabled = doc.page >= p.page_count || (!canPdf && !pageImg(p, doc.page + 1));
-  $("prev2").style.opacity = $("prev2").disabled ? .25 : 1; $("next2").style.opacity = $("next2").disabled ? .25 : 1;
+  // 위쪽 쪽 넘기기 버튼: 첫·끝 쪽이거나 넘길 수 없는 쪽이면 흐리게
+  $("prev").disabled = doc.page <= 1 || (!canPdf && !pageImg(p, doc.page - 1));
+  $("next").disabled = doc.page >= p.page_count || (!canPdf && !pageImg(p, doc.page + 1));
+  // 양옆 결과 넘기기 버튼: 처음·마지막 결과면 흐리게
+  $("prev2").disabled = state.cur <= 0;
+  $("next2").disabled = state.cur >= state.results.length - 1;
+  for (const id of ["prev", "next", "prev2", "next2"]) $(id).style.opacity = $(id).disabled ? .3 : 1;
 }
 let pageIndex = null;
 function pageImg(p, n) {
@@ -343,13 +348,13 @@ $("stage").addEventListener("touchstart", e => { if (e.touches.length === 1) { t
 $("stage").addEventListener("touchend", e => {
   if ((window.visualViewport && visualViewport.scale > 1.05) || !e.changedTouches.length) return;
   const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
-  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) showDocPage(doc.page + (dx < 0 ? 1 : -1));   // 밀기 = 책장 넘기기
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) openViewer(state.cur + (dx < 0 ? 1 : -1));   // 밀기 = 검색 결과 넘기기
 }, { passive: true });
 document.onkeydown = e => {
   if (state.cur < 0) return;
   if (e.key === "Escape") closeViewer();
-  if (e.key === "ArrowRight") e.shiftKey ? openViewer(state.cur + 1) : showDocPage(doc.page + 1);
-  if (e.key === "ArrowLeft") e.shiftKey ? openViewer(state.cur - 1) : showDocPage(doc.page - 1);
+  if (e.key === "ArrowRight") e.shiftKey ? showDocPage(doc.page + 1) : openViewer(state.cur + 1);
+  if (e.key === "ArrowLeft") e.shiftKey ? showDocPage(doc.page - 1) : openViewer(state.cur - 1);
 };
 
 $("btnIndex").onclick = async () => {
