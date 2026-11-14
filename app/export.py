@@ -47,6 +47,15 @@ def original_name(p: dict) -> str:
     return f"{p['file_id']}{ext}" if ext in ORIGINAL_EXTS else ""
 
 
+def _pdf_pages(path: str) -> int:
+    try:
+        import pymupdf
+        with pymupdf.open(path) as d:
+            return d.page_count
+    except Exception:
+        return 0
+
+
 def fix_title(it: dict) -> dict:
     """손글씨 항목 제목이 워터마크·로고로 잘못 붙은 경우 → 받아 적은 내용 첫 줄로 바꿈."""
     from .vision import _JUNK
@@ -64,7 +73,14 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     # 내보낼 때도 목차·색인·단순 목록·로고를 거름 → 파일을 다시 처리하기 전이라도 바로 반영
     concepts = db.concepts()     # ① AI가 정리한 페이지별 요약·개념·질문
     pages = []
+    totals: dict[str, int] = {}
     for p in db.export_pages(with_text=True):
+        # 예전에 저장된 '쪽수'는 색인된 쪽수였음 → 원본 PDF가 있으면 실제 전체 쪽수로 바로잡음
+        ap = p.get("abs_path")
+        if ap and ap.lower().endswith(".pdf"):
+            if ap not in totals:
+                totals[ap] = _pdf_pages(ap)
+            p["page_count"] = totals[ap] or p["page_count"]
         toc = looks_like_toc(p.pop("text", ""))
         items = [fix_title(it) for it in p["items"] if not is_junk(it) and not (toc and it["kind"] != "handwriting")]
         if items:

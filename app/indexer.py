@@ -205,6 +205,7 @@ class IndexJob:
                 finish(*pending.popleft())
 
         meta = dict(meta)
+        meta["page_total"] = st["pages"] or None        # 원본 전체 쪽수 (색인된 쪽수가 아님)
         if out["incomplete"]:
             # 버전을 비워 두면 다음 색인 때 이 파일을 다시 처리 (이미 분석된 페이지는 캐시라 추가 비용 없음)
             meta["version_key"] = ""

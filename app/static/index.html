@@ -67,7 +67,8 @@
   .vbar .btn[hidden] { display: none; }
   .vinfo { flex: 1; min-width: 0; color: #aaa; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .stage { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; }
-  .stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; display: block; }
+  .stage img, .stage canvas { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; display: block; }
+  .stage canvas[hidden], .stage img[hidden] { display: none; }
   .side { position: absolute; right: 0; top: 50px; bottom: 0; width: min(380px, 92vw); background: var(--panel);
           overflow: auto; padding: 16px; display: grid; gap: 12px; align-content: start; box-shadow: -4px 0 20px rgba(0,0,0,.5); }
   .side[hidden] { display: none; }
@@ -118,15 +119,15 @@
 
 <div class="viewer" id="viewer">
   <div class="vbar">
-    <button id="prev" title="이전 (←)">← 이전</button><button id="next" title="다음 (→)">다음 →</button>
+    <button id="prev" title="이전 검색 결과 (Shift+←)">← 이전 결과</button><button id="next" title="다음 검색 결과 (Shift+→)">다음 결과 →</button>
     <span class="vinfo" id="vsub"></span>
     <a id="vorig" class="btn" target="_blank" rel="noopener">원본 열기 ↗</a>
     <button id="vinfoBtn" title="AI 설명 보기">ⓘ</button>
     <button id="close" title="닫기 (Esc)">✕</button>
   </div>
-  <div class="stage" id="stage"><img id="vimg" alt=""></div>
-  <button class="edge left" id="prev2" aria-label="이전 그림">‹</button>
-  <button class="edge right" id="next2" aria-label="다음 그림">›</button>
+  <div class="stage" id="stage"><img id="vimg" alt=""><canvas id="vcanvas" hidden></canvas></div>
+  <button class="edge left" id="prev2" aria-label="같은 책 앞 쪽" title="같은 책 앞 쪽 (←)">‹</button>
+  <button class="edge right" id="next2" aria-label="같은 책 뒤 쪽" title="같은 책 뒤 쪽 (→)">›</button>
   <aside class="side" id="side" hidden>
     <h2 id="vtitle"></h2>
     <div class="timing" id="vtime"></div>
@@ -247,9 +248,9 @@ $("grid").onclick = e => { const c = e.target.closest(".card"); if (c) openViewe
 
 function openViewer(i) {
   const p = state.results[i]; if (!p) return;
-  state.cur = i;
+  state.cur = i; doc.p = p; doc.page = p.page_no;
   const t0 = performance.now();
-  const img = $("vimg");
+  const img = $("vimg"); img.hidden = false; $("vcanvas").hidden = true;
   img.src = imgUrl("thumbs", p);                       // 캐시된 썸네일을 먼저 보여주고
   const full = new Image();
   full.onload = () => { if (state.cur === i) { img.src = full.src;
@@ -257,6 +258,7 @@ function openViewer(i) {
   full.src = imgUrl("pages", p);                       // 고해상도로 교체
   $("vtitle").textContent = p.file_name;
   $("vsub").textContent = `${p.file_name} · ${p.page_no} / ${p.page_count}쪽`;
+  edgeState();
   // 원본 열기: NAS(또는 PC)에 복사된 원본 PDF를 해당 쪽으로. 없으면 Google Drive 링크
   const o = $("vorig"), base = STATIC_MODE ? "files/" : "/files/";
   if (p.orig) {
@@ -281,8 +283,59 @@ function closeViewer() { $("viewer").classList.remove("open"); state.cur = -1; }
 $("close").onclick = closeViewer;
 $("prev").onclick = () => openViewer(state.cur - 1);
 $("next").onclick = () => openViewer(state.cur + 1);
-$("prev2").onclick = () => openViewer(state.cur - 1);
-$("next2").onclick = () => openViewer(state.cur + 1);
+$("prev2").onclick = () => showDocPage(doc.page - 1);
+$("next2").onclick = () => showDocPage(doc.page + 1);
+// ── 같은 책(PDF)의 앞뒤 쪽 넘기기: 색인된 쪽은 미리 만든 이미지, 아닌 쪽은 원본 PDF에서 그 쪽만 받아 그림 ──
+const doc = { p: null, page: 0, pdfs: new Map(), busy: 0 };
+function fileIdOf(p) { return p.page_key.slice(0, p.page_key.lastIndexOf("_")); }
+function edgeState() {
+  const p = doc.p; if (!p) return;
+  const canPdf = p.orig && /\.pdf$/i.test(p.orig);
+  $("prev2").disabled = doc.page <= 1 || (!canPdf && !pageImg(p, doc.page - 1));
+  $("next2").disabled = doc.page >= p.page_count || (!canPdf && !pageImg(p, doc.page + 1));
+  $("prev2").style.opacity = $("prev2").disabled ? .25 : 1; $("next2").style.opacity = $("next2").disabled ? .25 : 1;
+}
+let pageIndex = null;
+function pageImg(p, n) {
+  if (!pageIndex) { pageIndex = new Map(); DATA.pages.forEach(x => pageIndex.set(x.page_key, x)); }
+  return pageIndex.get(`${fileIdOf(p)}_${n}`);
+}
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve();
+  return new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = "pdfjs/pdf.min.js";
+    sc.onload = () => { pdfjsLib.GlobalWorkerOptions.workerSrc = "pdfjs/pdf.worker.min.js"; ok(); }; sc.onerror = bad; document.head.append(sc); });
+}
+async function showDocPage(n) {
+  const p = doc.p; if (!p || n < 1 || n > p.page_count) return;
+  doc.page = n; const my = ++doc.busy;
+  const label = `${p.file_name} · ${n} / ${p.page_count}쪽`;
+  $("vsub").textContent = label + (n === p.page_no ? "" : "  (검색 결과 쪽: " + p.page_no + ")");
+  edgeState(); $("stage").scrollTop = 0;
+  const known = pageImg(p, n), img = $("vimg"), cv = $("vcanvas");
+  if (known) {                                            // 색인된 쪽: 이미지로 즉시
+    img.src = imgUrl("pages", known); img.hidden = false; cv.hidden = true; return;
+  }
+  if (!(p.orig && /\.pdf$/i.test(p.orig))) return;
+  try {                                                   // 색인 안 된 쪽: 원본 PDF에서 필요한 부분만 받아 그림
+    $("vsub").textContent = label + " · 원본에서 불러오는 중…";
+    await loadPdfJs();
+    const url = (STATIC_MODE ? "files/" : "/files/") + p.orig;
+    let pdf = doc.pdfs.get(url);
+    if (!pdf) { pdf = pdfjsLib.getDocument({ url, disableAutoFetch: true, disableStream: true, rangeChunkSize: 262144 }).promise; doc.pdfs.set(url, pdf); }
+    const pdfDoc = await pdf;
+    if (pdfDoc.numPages && pdfDoc.numPages !== p.page_count) { p.page_count = pdfDoc.numPages; edgeState(); }
+    const pg = await pdfDoc.getPage(n);
+    if (my !== doc.busy) return;                          // 그 사이 다른 쪽으로 넘김
+    const st = $("stage"), dpr = devicePixelRatio || 1, base = pg.getViewport({ scale: 1 });
+    const scale = Math.min(st.clientWidth / base.width, st.clientHeight / base.height) * dpr;
+    const vp = pg.getViewport({ scale });
+    cv.width = vp.width; cv.height = vp.height; cv.style.width = (vp.width / dpr) + "px"; cv.style.height = (vp.height / dpr) + "px";
+    await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    if (my !== doc.busy) return;
+    img.hidden = true; cv.hidden = false;
+    $("vsub").textContent = label + (n === p.page_no ? "" : "  (검색 결과 쪽: " + p.page_no + ")");
+  } catch (e) { $("vsub").textContent = label + " · 원본을 불러오지 못했어요"; }
+}
 $("vinfoBtn").onclick = () => { $("side").hidden = !$("side").hidden; };
 // 손가락으로 밀어서 이전/다음 (확대한 상태에서는 넘기지 않음)
 let tx = 0, ty = 0;
@@ -290,13 +343,13 @@ $("stage").addEventListener("touchstart", e => { if (e.touches.length === 1) { t
 $("stage").addEventListener("touchend", e => {
   if ((window.visualViewport && visualViewport.scale > 1.05) || !e.changedTouches.length) return;
   const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
-  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) openViewer(state.cur + (dx < 0 ? 1 : -1));
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) showDocPage(doc.page + (dx < 0 ? 1 : -1));   // 밀기 = 책장 넘기기
 }, { passive: true });
 document.onkeydown = e => {
   if (state.cur < 0) return;
   if (e.key === "Escape") closeViewer();
-  if (e.key === "ArrowRight") openViewer(state.cur + 1);
-  if (e.key === "ArrowLeft") openViewer(state.cur - 1);
+  if (e.key === "ArrowRight") e.shiftKey ? openViewer(state.cur + 1) : showDocPage(doc.page + 1);
+  if (e.key === "ArrowLeft") e.shiftKey ? openViewer(state.cur - 1) : showDocPage(doc.page - 1);
 };
 
 $("btnIndex").onclick = async () => {
@@ -725,7 +778,7 @@ async function loadAll() {
   if (loading) return; loading = true;
   try {
     DATA = expandData(await fetch(STATIC_MODE ? "data.json" : "/api/data", { cache: "no-cache" }).then(r => r.json()));
-    TEXT = {}; prepare(); countKinds();
+    TEXT = {}; pageIndex = null; prepare(); countKinds();
     const head = `${DATA.meta.folder_name ? "📂 " + DATA.meta.folder_name + " · " : ""}시각자료 페이지 ${DATA.pages.length} · 업데이트 ${DATA.meta.exported_at}`;
     if (STATIC_MODE) $("status").textContent = head + " · 검색 준비 중…";
     search();

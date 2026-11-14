@@ -147,7 +147,7 @@ class DB:
                 "INSERT OR REPLACE INTO files(file_id, name, mime_type, path, web_link, version_key, page_count,"
                 " abs_path) VALUES(?,?,?,?,?,?,?,?)",
                 (fid, meta["name"], meta.get("mime_type"), meta.get("path"), meta.get("web_link"),
-                 meta.get("version_key"), len(pages), meta.get("_local_key")),
+                 meta.get("version_key"), meta.get("page_total") or len(pages), meta.get("_local_key")),
             )
             for p in pages:
                 self.conn.execute(

@@ -737,3 +737,19 @@ def test_pwa_files_exported_and_served(env):
     c = TestClient(mm.app)
     assert c.get("/manifest.webmanifest").status_code == 200 and c.get("/sw.js").status_code == 200
     assert c.get("/icon-192.png").status_code == 200 and c.get("/icon-7.png").status_code == 404
+
+
+def test_real_page_total_saved_and_exported(env, monkeypatch):
+    import json
+    tmp, db, job, settings = env
+    from app.drive import LocalFolder
+    from app.export import export_site
+    root = tmp / "pt"; root.mkdir(); make_pdf(root / "b.pdf")          # 3쪽 중 2쪽만 색인됨
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    out = tmp / "web"; export_site(db, out)
+    data = json.loads((out / "data.json").read_text(encoding="utf-8"))
+    assert len(data["pages"]) == 2 and data["files"][0][3] == 3           # 전체 쪽수는 3
+    # 예전 방식(색인 쪽수)으로 저장된 DB도 내보낼 때 원본에서 바로잡음
+    db.conn.execute("UPDATE files SET page_count=2"); db.conn.commit()
+    export_site(db, out)
+    assert json.loads((out / "data.json").read_text(encoding="utf-8"))["files"][0][3] == 3
