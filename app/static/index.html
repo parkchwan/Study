@@ -54,6 +54,14 @@
   #aiBtn.on { background: #f59e0b; color: #1d2330; border-color: #f59e0b; }
   .concepts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   #keybar button { padding: 3px 10px; font-size: 13px; }
+  /* 최근 검색어 */
+  .hist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .hist .h { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 999px;
+             border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer; }
+  .hist .h span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
+  .hist .h b { font-weight: 400; color: var(--muted); padding: 0 6px; }
+  .hist .lab, .hist .clr { font-size: 12px; color: var(--muted); }
+  .hist .clr { cursor: pointer; text-decoration: underline; margin-left: 4px; }
   .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--accent-soft);
          color: var(--accent); margin-right: 4px; }
   .empty { text-align: center; color: var(--muted); padding: 60px 16px; }
@@ -109,6 +117,7 @@
   </div>
   <div class="chips" id="chips"></div>
   <div class="status" id="keybar" hidden></div>
+  <div class="hist" id="hist" hidden></div>
 </header>
 <main>
   <div class="status" id="count" style="margin:0 0 10px"></div>
@@ -166,9 +175,41 @@ function fitQ() {
 $("q").addEventListener("mousedown", e => {        // 모서리를 잡고 끄는 경우
   const r = $("q").getBoundingClientRect(); if (e.clientX > r.right - 20 && e.clientY > r.bottom - 20) qManual = true;
 });
-$("q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); clearTimeout(timer); state.q = $("q").value.trim(); search(); } });
+$("q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); clearTimeout(timer); state.q = $("q").value.trim(); remember(state.q); search(); } });
 $("q").addEventListener("input", fitQ);
-$("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("q").value.trim(); search(); }, 150); };
+$("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("q").value.trim(); search(); }, 150);
+  clearTimeout(histTimer); histTimer = setTimeout(() => remember($("q").value), 2500); renderHist(); };
+// ── 최근 검색어 (이 기기에만 저장) ──
+const HIST_KEY = "search_history", HIST_MAX = 30;
+let histTimer;
+function loadHist() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); } catch (e) { return []; } }
+function saveHist(h) { try { localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, HIST_MAX))); } catch (e) {} }
+function remember(q) {
+  q = String(q || "").trim().replace(/\s+/g, " ");
+  if (q.length < 2) return;
+  saveHist([q, ...loadHist().filter(x => x !== q)]);
+  renderHist();
+}
+function renderHist() {
+  const box = $("hist"), h = loadHist(), focused = document.activeElement === $("q");
+  // 검색 칸이 비어 있거나 검색 칸을 눌렀을 때만 보여 줌
+  box.hidden = !h.length || !(focused || !$("q").value.trim());
+  if (box.hidden) return;
+  box.innerHTML = `<span class="lab">🕘 최근 검색</span>` + h.slice(0, 12).map((q, i) =>
+    `<span class="h" data-i="${i}" title="${esc(q)}"><span>${esc(q)}</span><b data-del="${i}" title="이 기록 지우기">✕</b></span>`).join("")
+    + `<span class="clr" id="histClear">모두 지우기</span>`;
+}
+$("hist").addEventListener("mousedown", e => e.preventDefault());      // 누르는 동안 검색 칸 포커스 유지
+$("hist").onclick = e => {
+  if (e.target.id === "histClear") { saveHist([]); renderHist(); return; }
+  const del = e.target.dataset.del;
+  if (del !== undefined) { const h = loadHist(); h.splice(+del, 1); saveHist(h); renderHist(); return; }
+  const chip = e.target.closest(".h"); if (!chip) return;
+  const q = loadHist()[+chip.dataset.i]; if (!q) return;
+  $("q").value = q; state.q = q; qManual = false; fitQ(); remember(q); search(); $("q").blur(); $("hist").hidden = true;
+};
+$("q").addEventListener("focus", renderHist);
+$("q").addEventListener("blur", () => setTimeout(renderHist, 150));
 
 const PAGE_CHUNK = 120;          // 결과 카드는 120개씩 나눠 그림 → 결과가 수천 개여도 바로 뜸
 const imgUrl = (dir, p) => `img/${dir}/${p.page_key}.webp?v=${p.v || ""}`;
@@ -248,6 +289,7 @@ $("grid").onclick = e => { const c = e.target.closest(".card"); if (c) openViewe
 
 function openViewer(i) {
   const p = state.results[i]; if (!p) return;
+  if (state.q) remember(state.q);                       // 결과를 열어 봤으면 그 검색어는 기록
   state.cur = i; doc.p = p; doc.page = p.page_no;
   const t0 = performance.now();
   const img = $("vimg"); img.hidden = false; $("vcanvas").hidden = true;
@@ -727,7 +769,7 @@ async function searchByImage(f) {
     const r = await readQuestion(await shrinkImage(f));
     const q = (r.question && r.question.length <= 80 ? r.question : r.query || r.question || "").trim();
     if (!q) { $("count").textContent = "📷 사진에서 문제나 그림 내용을 찾지 못했어요. 잘 보이게 다시 찍어 주세요."; return; }
-    $("q").value = q; state.q = q; qManual = false; fitQ();
+    $("q").value = q; state.q = q; qManual = false; fitQ(); remember(q);
     try { localStorage.setItem("ai_precise", "1"); } catch (e) {}   // 사진 검색은 AI 정밀 검색까지 켜서 정확도 우선
     aiButton(); search(); window.scrollTo(0, 0);
   } catch (e) { $("count").textContent = `📷 사진 검색 실패: ${e.message}`; }
@@ -744,7 +786,7 @@ async function handleShare() {
     } catch (e) {}
   }
   const t = (P.get("text") || "").replace(/https?:\/\/\S+/g, "").trim();
-  if (t) { $("q").value = t; state.q = t; qManual = false; fitQ(); search(); }
+  if (t) { $("q").value = t; state.q = t; qManual = false; fitQ(); remember(t); search(); }
 }
 // 앱으로 설치(PWA): 설치하면 '공유' 메뉴에 나타남. https 또는 localhost에서만 가능
 let installEvt = null;
@@ -792,7 +834,7 @@ async function loadAll() {
     if (m.embed) jobs.push(fetch(m.embed.file).then(r => r.arrayBuffer()).then(b => { EMB = new Int8Array(b); EMB_DIM = m.embed.dim; }));
     else EMB = null;
     const res = await Promise.allSettled(jobs);
-    prepare(); aiButton(); search(); keyBar();
+    prepare(); aiButton(); search(); keyBar(); renderHist();
     handleShare();
     if (STATIC_MODE) $("status").textContent = head + (res[0].status === "rejected" ? " · 본문 검색 불가(그림 설명만 검색)" : "");
   } finally { loading = false; }
