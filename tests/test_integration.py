@@ -343,3 +343,40 @@ def test_skeleton_cloud_sync_folder_mode(exported, tmp_path):
     assert set(json.loads((sd / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]) == {"140-1-1"}
     assert set(json.loads((sd / "out" / "골격_139회.json").read_text(encoding="utf-8"))["items"]) == {"139-1-1", "139-9-9"}
     assert json.loads((sd / "_nas_status" / "last_run.json").read_text(encoding="utf-8"))["made"] == 2
+
+
+def test_skeleton_keeps_reviewed_edits_and_skips_untouched_rounds(exported, tmp_path):
+    """이미 올린 골격을 학습 앱이 검수·수정했으면 그대로 두고, 이번에 안 만든 회차 파일은 다시 쓰지 않음."""
+    out, _, _ = exported
+    sd = tmp_path / "gdrive"
+    (sd / "out").mkdir(parents=True)
+    items = [{"id": "140-1-1", "r": 140, "p": 1, "q": "CLT와 GLT 비교", "ref": ""},
+             {"id": "140-1-2", "r": 140, "p": 1, "q": "베이크 아웃", "ref": ""},
+             {"id": "139-1-1", "r": 139, "p": 1, "q": "말뚝", "ref": ""}]
+    (sd / "gem_input.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    (sd / "prompt.txt").write_text("{{Q}} {{TYPE}} {{REF}}", encoding="utf-8")
+    work = tmp_path / "work5"
+    (work / "raw2").mkdir(parents=True)
+    # 지난 실행에서 140-1-1 을 만들어 올렸고, 학습 앱이 검수하며 고쳐 둠
+    (work / "raw2" / "140-1-1.json").write_text(json.dumps({"src": "gemini", "toc": ["NAS 원본"]}), encoding="utf-8")
+    (sd / "out" / "골격_140회.json").write_text(json.dumps({"items": {"140-1-1": {"src": "gemini", "toc": ["검수본"]}}},
+                                                          ensure_ascii=False, indent=2), encoding="utf-8")
+    # 139회는 형식(들여쓰기)만 다른 예전 파일. 이번 실행에서 139 문제는 안 만듦 (--limit 1)
+    old139 = json.dumps({"items": {"139-1-1": {"src": "gemini", "toc": [1, 2, 3]}}}, indent=4)
+    (sd / "out" / "골격_139회.json").write_text(old139, encoding="utf-8")
+    FakeGemini.calls = []
+    FakeGemini.reply = {"toc": [{"h": "새", "kw": []}, {"h": "b", "kw": []}, {"h": "c", "kw": []}]}
+    srv = HTTPServer(("127.0.0.1", 0), FakeGemini)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        r = subprocess.run([sys.executable, "-I", str(NAS / "skeleton.py"), "--limit", "1"], capture_output=True, text=True,
+                           timeout=120, env=dict(os.environ, DRIVE_INDEX_DIR=str(out), SKEL_WORK=str(work), SKEL_DIR=str(sd),
+                                                 GEMINI_API_KEY="k", SKEL_SLEEP="0", API_PORT="1",
+                                                 GEMINI_BASE=f"http://127.0.0.1:{srv.server_port}/v1beta"))
+    finally:
+        srv.shutdown()
+    assert r.returncode == 0, r.stdout + r.stderr
+    g = json.loads((sd / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]
+    assert g["140-1-1"]["toc"] == ["검수본"]                  # 검수본 유지
+    assert g["140-1-2"]["toc"][0]["h"] == "새"                # 이번에 만든 것만 추가
+    assert (sd / "out" / "골격_139회.json").read_text(encoding="utf-8") == old139   # 안 건드림

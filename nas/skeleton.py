@@ -130,13 +130,27 @@ def push_status():
         log("  상태 올리기 실패: %s" % str(e)[:200])
 
 
-def push(out):
+def refresh_prev(prev):
+    """드라이브의 현재 골격을 다시 받아 둠 (실행 중에 학습 앱이 고친 내용을 덮어쓰지 않게)."""
     if local_mode():
-        for n in os.listdir(out):
+        od = os.path.join(SKEL_DIR, "out")
+        for n in (os.listdir(od) if os.path.isdir(od) else []):
             if n.startswith("골격_") and n.endswith("회.json"):
-                copy_if_changed(os.path.join(out, n), os.path.join(SKEL_DIR, "out", n))
+                copy_if_changed(os.path.join(od, n), os.path.join(prev, n))
+    else:
+        rclone("copy", REMOTE + "/out", prev, "--include", "/골격_*회.json")
+
+
+def push(out, names):
+    """이번에 바뀐 회차 파일만 올림."""
+    if local_mode():
+        for n in names:
+            copy_if_changed(os.path.join(out, n), os.path.join(SKEL_DIR, "out", n))
         return
-    rclone("copy", out, REMOTE + "/out", "--include", "/골격_*회.json")
+    flt = []
+    for n in names:
+        flt += ["--include", "/" + n]
+    rclone("copy", out, REMOTE + "/out", *flt)
 
 
 class RemoteIndex(object):
@@ -413,8 +427,14 @@ def src_check(obj, index):
 
 
 # ── 회차별 파일 만들기 ─────────────────────────────────────────
-def build_rounds(items, raw2, prev_dir, out_dir):
-    """기존 형식 {"items":{id: {...}}}. 새로 만든 것(raw2)이 우선, 없으면 예전 골격을 그대로 둠."""
+def build_rounds(items, raw2, prev_dir, out_dir, fresh=()):
+    """기존 형식 {"items":{id: {...}}} 로 회차 파일을 만듦.
+
+    - 이번 실행에서 새로 만든 문제(fresh)만 드라이브의 현재 골격을 덮어씀
+    - 그 밖의 문제는 드라이브에 있는 것(학습 앱이 검수·수정한 것 포함)을 그대로 둠
+    - 내용이 하나도 안 바뀐 회차는 다시 쓰지 않음 (형식만 다른 '괜한 수정'으로 재검수가 돌지 않게)
+    """
+    fresh = set(fresh)
     changed = []
     rounds = []
     for it in items:
@@ -434,19 +454,16 @@ def build_rounds(items, raw2, prev_dir, out_dir):
             if it["r"] != r:
                 continue
             new = read(os.path.join(raw2, it["id"] + ".json"))
-            if new:
+            if new and (it["id"] in fresh or it["id"] not in prev):   # 새로 만든 것, 또는 아직 한 번도 못 올린 것
                 merged[it["id"]] = json.loads(new)
             elif it["id"] in prev:
                 merged[it["id"]] = prev[it["id"]]
         for k, v in prev.items():                 # 입력에 없는 예전 문제도 지우지 않음
             merged.setdefault(k, v)
-        if not merged:
+        if not merged or merged == prev:
             continue
-        body = json.dumps({"items": merged}, ensure_ascii=False)
-        dst = os.path.join(out_dir, name)
-        if read(dst) != body:
-            write_atomic(dst, body)
-            changed.append(name)
+        write_atomic(os.path.join(out_dir, name), json.dumps({"items": merged}, ensure_ascii=False))
+        changed.append(name)
     return changed
 
 
@@ -525,10 +542,15 @@ def main():
     def flush(final=False):
         """회차 파일을 다시 만들고 드라이브에 올림 + 진행 상황 기록. 중간에 끊겨도 만든 만큼은 올라가게."""
         try:
-            changed = build_rounds(items, raw2, prev, out)
+            if not args.no_sync:
+                try:
+                    refresh_prev(prev)
+                except Exception as e:
+                    log("  드라이브 골격 다시 받기 실패(받아 둔 것으로 계속): %s" % str(e)[:200])
+            changed = build_rounds(items, raw2, prev, out, fresh)
             if changed and not args.no_sync:
                 log("드라이브에 올리는 중: %s" % ", ".join(changed))
-                push(out)
+                push(out, changed)
                 st["uploaded"] = sorted(set(st["uploaded"]) | set(changed))
         except Exception as e:                  # 업로드가 실패해도 생성은 계속
             log("  드라이브 올리기 실패(다음에 다시): %s" % str(e)[:300])
@@ -541,6 +563,7 @@ def main():
 
     sleep = float(os.environ.get("SKEL_SLEEP", "7"))
     errors_in_row, since_flush = 0, 0
+    fresh = set()                       # 이번 실행에서 새로 만든 문제 (이것만 드라이브 골격을 덮어씀)
     try:
         for n, it in enumerate(todo, 1):
             if st["made"] >= limit:
@@ -567,6 +590,7 @@ def main():
                 log("  건너뜀 (다음 실행 때 다시)")
                 continue
             write_atomic(os.path.join(raw2, it["id"] + ".json"), json.dumps(rec, ensure_ascii=False))
+            fresh.add(it["id"])
             st["made"] += 1
             since_flush += 1
             log("  저장 · 출처 확인 %d개 맞음, 근거 없음 %d개 · 토큰 입력 %d 출력 %d" % (
