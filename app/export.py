@@ -112,6 +112,24 @@ def build_payload(db: DB) -> tuple[dict, dict, list]:
     return data, texts, thesaurus.groups(db)
 
 
+RECENT_ROUNDS = 21        # 최근 7년 ≈ 21회 (1년에 3회 시행)
+
+
+def load_questions(path: Path | None = None) -> list[dict]:
+    """기출문제 목록 [{id, r(회), p(교시), q(문제)}] — 최근 7년만. 파일이 없으면 빈 목록."""
+    path = Path(path or settings.questions_path)
+    try:
+        items = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    out = [{"id": str(it.get("id", "")), "r": int(it["r"]), "p": int(it.get("p") or 0), "q": str(it["q"]).strip()}
+           for it in items if isinstance(it, dict) and it.get("q") and str(it.get("r", "")).isdigit()]
+    if not out:
+        return []
+    newest = max(x["r"] for x in out)
+    return [x for x in out if x["r"] > newest - RECENT_ROUNDS]
+
+
 def _copy_viewer(out_dir: Path) -> None:
     """원본 PDF 보기 화면(pdf.html + pdf.js)을 함께 내보냄."""
     (out_dir / "pdfjs").mkdir(exist_ok=True)
@@ -172,6 +190,9 @@ def export_site(db: DB, out_dir: Path, api_budget_s: float | None = None) -> dic
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     html = html.replace("const STATIC_MODE = false;", "const STATIC_MODE = true;", 1)
     (out_dir / "index.html").write_text(html, encoding="utf-8")
+    qs = load_questions()
+    if qs:                                      # 첫 화면의 '오늘의 기출' (없으면 이전 파일 유지 — NAS가 매일 갱신)
+        (out_dir / "questions.json").write_text(dump(qs), encoding="utf-8")
     tmp.replace(out_dir / "data.json")          # 마지막에 교체 → 보는 중에도 깨지지 않음
     res = {"dir": str(out_dir), "pages": len(pages)}
     if settings.api_export:                     # 학습 앱 연동 (NAS 검색 API·드라이브 내보내기·골격 생성용)

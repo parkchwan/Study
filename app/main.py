@@ -173,6 +173,12 @@ def api_data():
     return _cached_payload()["data"]
 
 
+@app.get("/api/questions")
+def questions():
+    from .export import load_questions
+    return load_questions()
+
+
 @app.get("/api/text")
 def api_text():
     return _cached_payload()["texts"]

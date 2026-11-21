@@ -386,6 +386,23 @@ def build_rounds(items, raw2, prev_dir, out_dir):
     return changed
 
 
+RECENT_ROUNDS = 21     # 최근 7년 ≈ 21회 (app/export.py 와 같은 값)
+
+
+def write_questions(items):
+    """검색 화면 '오늘의 기출'용 목록을 웹 폴더에 둠 (드라이브의 gem_input.json이 바뀌면 다음 날 반영)."""
+    try:
+        qs = [{"id": str(it["id"]), "r": int(it["r"]), "p": int(it.get("p") or 0), "q": str(it["q"]).strip()}
+              for it in items if it.get("q")]
+        if not qs:
+            return
+        newest = max(x["r"] for x in qs)
+        qs = [x for x in qs if x["r"] > newest - RECENT_ROUNDS]
+        write_atomic(os.path.join(DATA, "questions.json"), json.dumps(qs, ensure_ascii=False, separators=(",", ":")))
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log("기출 목록 저장 실패: %s" % e)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-sync", action="store_true", help="드라이브와 주고받지 않음 (work/in 에 있는 입력 사용)")
@@ -415,6 +432,7 @@ def main():
     tpl = read(os.path.join(inp, "prompt.txt"), "")
     t1, t2 = read(os.path.join(inp, "type_1.txt"), ""), read(os.path.join(inp, "type_2.txt"), "")
     model = os.environ.get("SKEL_MODEL") or (read(os.path.join(inp, "model.txt"), "") or "").strip() or "gemini-flash-latest"
+    write_questions(items)
     if not items or "{{Q}}" not in tpl:
         log("입력 파일(gem_input.json / prompt.txt)이 비었습니다")
         return 1

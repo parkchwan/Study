@@ -242,3 +242,17 @@ def test_skeleton_uses_running_api(exported, tmp_path):
     a = json.loads((work / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]["140-1-1"]
     assert a["fig"]["src_ref"] == "목구조 교재 p.1" and a["fig"]["src_img"].endswith("_1_0.jpg")   # 표 조각
     assert a["toc"][1]["nosrc"] is True and a["src_check"] == {"ok": 1, "ng": ["없는말일세"]}
+
+
+def test_recent_questions_exported(tmp_path, monkeypatch):
+    """최근 7년(21회) 기출만 questions.json 으로 내보냄 → 검색 화면 '오늘의 기출'."""
+    from app import config
+    from app.export import load_questions
+    items = [{"id": f"{r}-1-1", "r": r, "p": 1, "q": f"{r}회 문제에 대하여 설명하시오."} for r in range(110, 140)]
+    f = tmp_path / "gem_input.json"
+    f.write_text("﻿" + json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config.settings, "questions_file", str(f))
+    qs = load_questions()
+    assert [q["r"] for q in qs] == list(range(119, 140))
+    assert set(qs[0]) == {"id", "r", "p", "q"}
+    assert load_questions(tmp_path / "none.json") == []

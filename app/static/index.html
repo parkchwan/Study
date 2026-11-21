@@ -65,6 +65,13 @@
   .hist .h b { font-weight: 400; color: var(--muted); padding: 0 6px; }
   .hist .lab, .hist .clr { font-size: 12px; color: var(--muted); }
   .hist .clr { cursor: pointer; text-decoration: underline; margin-left: 4px; }
+  /* 오늘의 기출: 최근 7년 기출문제를 무작위로 하나씩, 누르면 그 주제로 검색 */
+  .quiz { display: flex; gap: 6px; align-items: stretch; }
+  .quiz button { padding: 6px 12px; font-size: 18px; line-height: 1; }
+  .quiz .qz { flex: 1; min-width: 0; padding: 7px 12px; border: 1px dashed var(--accent); border-radius: 8px;
+              background: var(--accent-soft); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1.4; }
+  .quiz .qz small { color: var(--accent); font-weight: 600; margin-right: 6px; white-space: nowrap; }
+  .quiz .qz:active { filter: brightness(.95); }
   .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--accent-soft);
          color: var(--accent); margin-right: 4px; }
   .empty { text-align: center; color: var(--muted); padding: 60px 16px; }
@@ -121,6 +128,12 @@
   <div class="chips" id="chips"></div>
   <div class="status" id="keybar" hidden></div>
   <div class="hist" id="hist" hidden></div>
+  <div class="quiz" id="quiz" hidden>
+    <button id="qzPrev" title="이전 문제" aria-label="이전 문제">‹</button>
+    <div class="qz" id="qzText" title="누르면 이 문제 주제로 검색"></div>
+    <button id="qzNext" title="다음 문제" aria-label="다음 문제">›</button>
+    <button id="qzMix" title="새로 섞기" aria-label="새로 섞기">🎲</button>
+  </div>
 </header>
 <main>
   <div class="status" id="count" style="margin:0 0 10px"></div>
@@ -823,6 +836,49 @@ function countKinds() {
   DATA.pages.forEach(p => p.items.forEach(it => state.byKind[it.kind] = (state.byKind[it.kind] || 0) + 1));
   renderChips();
 }
+
+// ── 오늘의 기출: 최근 7년 기출문제를 섞어서 하나씩. 누르면 그 주제로 검색, ‹ › 로 넘김 ──
+const QZ_KEY = "quiz_state";
+let QZ = [], qzOrder = [], qzI = 0;
+function qzSave() { try { localStorage.setItem(QZ_KEY, JSON.stringify({ n: QZ.length, order: qzOrder, i: qzI })); } catch (e) {} }
+function qzShuffle() {
+  qzOrder = QZ.map((_, i) => i);
+  for (let i = qzOrder.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [qzOrder[i], qzOrder[j]] = [qzOrder[j], qzOrder[i]]; }
+  qzI = 0; qzSave();
+}
+function qzRender() {
+  const it = QZ[qzOrder[qzI]]; if (!it) { $("quiz").hidden = true; return; }
+  const no = String(it.id || "").split("-")[2];
+  $("qzText").innerHTML = `<small>${it.r}회 ${it.p}교시${no ? " " + esc(no) + "번" : ""} · ${qzI + 1}/${qzOrder.length}</small>${esc(it.q)}`;
+  $("quiz").hidden = false;
+}
+function qzMove(d) { if (!qzOrder.length) return; qzI = (qzI + d + qzOrder.length) % qzOrder.length; qzSave(); qzRender(); }
+// 문제 문장 끝의 '~에 대하여 설명하시오.' 같은 말은 검색에 방해 → 떼고 주제만
+const qzTopic = q => String(q).replace(/\s*(에\s*대하여|에\s*대해서?|에\s*관하여|을|를)?\s*(설명|기술|논|서술)하시오\.?\s*$/, "").trim();
+async function loadQuiz() {
+  try {
+    const r = await fetch(STATIC_MODE ? "questions.json" : "/api/questions", { cache: "no-cache" });
+    QZ = r.ok ? await r.json() : [];
+  } catch (e) { QZ = []; }
+  if (!Array.isArray(QZ) || !QZ.length) { $("quiz").hidden = true; return; }
+  let saved = null; try { saved = JSON.parse(localStorage.getItem(QZ_KEY) || "null"); } catch (e) {}
+  if (saved && saved.n === QZ.length && Array.isArray(saved.order) && saved.order.length === QZ.length) { qzOrder = saved.order; qzI = saved.i || 0; }
+  else qzShuffle();                       // 처음이거나 문제 목록이 바뀌면 새로 섞음
+  qzRender();
+}
+$("qzPrev").onclick = () => qzMove(-1);
+$("qzNext").onclick = () => qzMove(1);
+$("qzMix").onclick = () => { qzShuffle(); qzRender(); };
+$("qzText").onclick = () => {
+  const it = QZ[qzOrder[qzI]]; if (!it) return;
+  const q = qzTopic(it.q);
+  $("q").value = q; state.q = q; qManual = false; fitQ(); remember(q); search(); $("q").blur();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+{ let x0 = null;                           // 손가락으로 밀어서 넘기기
+  $("quiz").addEventListener("touchstart", e => { x0 = e.changedTouches[0].clientX; }, { passive: true });
+  $("quiz").addEventListener("touchend", e => { if (x0 === null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) > 50) qzMove(dx < 0 ? 1 : -1); }); }
 let loading = false;
 async function loadAll() {
   if (loading) return; loading = true;
@@ -847,6 +903,7 @@ if (STATIC_MODE) {
   document.querySelector(".bar").remove();
 } else poll();
 loadAll();
+loadQuiz();
 </script>
 </body>
 </html>

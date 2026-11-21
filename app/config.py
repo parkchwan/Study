@@ -57,6 +57,15 @@ class Settings:
     enrich: bool = field(default_factory=lambda: os.getenv("ENRICH", "on").lower() in ("on", "1", "true", "yes"))
     enrich_max_pages: int = field(default_factory=lambda: _int("ENRICH_MAX_PAGES", 0))
 
+    # 기출문제 목록(학습 앱의 gem_input.json). 비우면 기본 폴더 아래 _답안골격_교재그림/gemini/gem_input.json
+    questions_file: str = field(default_factory=lambda: os.getenv("QUESTIONS_FILE", ""))
+
+    @property
+    def questions_path(self) -> Path:
+        if self.questions_file:
+            return Path(self.questions_file)
+        return Path(self.default_folder) / "_답안골격_교재그림" / "gemini" / "gem_input.json"
+
     @property
     def ai_image_px(self) -> int:
         return max(self.vision_image_px, self.handwriting_image_px) if self.handwriting else self.vision_image_px
