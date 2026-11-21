@@ -54,8 +54,11 @@
   #aiBtn.on { background: #f59e0b; color: #1d2330; border-color: #f59e0b; }
   .concepts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   #keybar button { padding: 3px 10px; font-size: 13px; }
+  #more { display: block; }
   /* 최근 검색어 */
   .hist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  /* display를 지정한 요소는 hidden 속성이 무시되므로 명시적으로 숨김 */
+  [hidden] { display: none !important; }   /* 어떤 요소든 hidden이면 확실히 숨김 */
   .hist .h { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 999px;
              border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer; }
   .hist .h span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
@@ -122,7 +125,7 @@
 <main>
   <div class="status" id="count" style="margin:0 0 10px"></div>
   <div class="grid" id="grid"></div>
-  <button id="more" hidden style="display:block;margin:16px auto">더 보기</button>
+  <button id="more" hidden style="margin:16px auto">더 보기</button>
   <div class="empty" id="empty" hidden>결과가 없습니다.</div>
 </main>
 
@@ -180,7 +183,7 @@ $("q").addEventListener("input", fitQ);
 $("q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("q").value.trim(); search(); }, 150);
   clearTimeout(histTimer); histTimer = setTimeout(() => remember($("q").value), 2500); renderHist(); };
 // ── 최근 검색어 (이 기기에만 저장) ──
-const HIST_KEY = "search_history", HIST_MAX = 30;
+const HIST_KEY = "search_history", HIST_MAX = 10;
 let histTimer;
 function loadHist() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); } catch (e) { return []; } }
 function saveHist(h) { try { localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(0, HIST_MAX))); } catch (e) {} }
@@ -194,8 +197,8 @@ function renderHist() {
   const box = $("hist"), h = loadHist(), focused = document.activeElement === $("q");
   // 검색 칸이 비어 있거나 검색 칸을 눌렀을 때만 보여 줌
   box.hidden = !h.length || !(focused || !$("q").value.trim());
-  if (box.hidden) return;
-  box.innerHTML = `<span class="lab">🕘 최근 검색</span>` + h.slice(0, 12).map((q, i) =>
+  if (box.hidden) { box.innerHTML = ""; return; }
+  box.innerHTML = `<span class="lab">🕘 최근 검색</span>` + h.slice(0, HIST_MAX).map((q, i) =>
     `<span class="h" data-i="${i}" title="${esc(q)}"><span>${esc(q)}</span><b data-del="${i}" title="이 기록 지우기">✕</b></span>`).join("")
     + `<span class="clr" id="histClear">모두 지우기</span>`;
 }
