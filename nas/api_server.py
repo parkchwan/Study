@@ -111,6 +111,8 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/(pages|figs)/(.+)$", path)
         if m and FILE_RE.match(m.group(2)):
             f = os.path.join(API_DIR, m.group(1), m.group(2))
+            if m.group(1) == "figs" and not os.path.exists(f):       # 그림 조각은 export/figs 에 있음
+                f = os.path.join(API_DIR, "export", "figs", m.group(2))
             try:
                 with open(f, "rb") as fh:
                     data = fh.read()

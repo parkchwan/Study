@@ -47,7 +47,25 @@
    - 키는 여기에만 입력하세요. 채팅이나 드라이브에는 절대 넣지 마세요.
 6. **설치용 폴더 지우기**: `\\PCHSNAS\web\drive-index-nas-setup` 을 삭제합니다.
 
-## 2. 드라이브 연결 (rclone, 처음 한 번)
+## 2. 드라이브 연결 — Synology Cloud Sync (권장)
+
+rclone의 공용 열쇠는 전 세계 사용자가 같이 써서 한도가 자주 차요(2026-11-22 첫 실행이 이 때문에 실패). Cloud Sync는 Synology 공식 앱이라 이 문제가 없어요.
+
+1. **공유 폴더 만들기**: 제어판 → 공유 폴더 → 생성 → 이름 `gdrive`
+2. **Cloud Sync 설치**: 패키지 센터 → `Cloud Sync`
+3. **연결 1 — 골격 폴더 (양방향)**
+   - Cloud Sync → + → Google Drive → 구글 로그인·허용
+   - 로컬 경로: `gdrive`
+   - 원격 경로: `건축시공기술사/_답안골격_교재그림/gemini`
+   - 동기화 방향: **양방향**
+4. **연결 2 — 색인 내보내기 (업로드만)**
+   - 같은 구글 계정 연결에서 작업 추가(또는 + 로 연결 하나 더)
+   - 로컬 경로: `web/drive-index/api/export`
+   - 원격 경로: `건축시공기술사/_drive_index_export`
+   - 동기화 방향: **로컬 변경 사항만 업로드**
+5. NAS에 `/volume1/gdrive/gem_input.json` 이 생기면 야간 작업이 자동으로 Cloud Sync 방식으로 바뀌어요 (rclone 안 씀).
+
+## 2-1. (대신) rclone으로 연결
 
 NAS에는 브라우저가 없어서 **PC에서 로그인한 결과를 붙여 넣는** 방식이에요.
 

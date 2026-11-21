@@ -4,8 +4,9 @@ NAS(DS216play)는 PDF를 열거나 그림을 자를 수 없으므로 무거운 �
  - api/pages.jsonl   : NAS 검색 API가 읽는 페이지 목록 (한 줄 = 한 페이지)
  - api/emb.bin       : pages.jsonl 순서의 의미 검색 벡터 (int8)
  - api/pages/*.jpg   : 페이지 이미지 1200px (야간 골격 생성 때 Gemini에 첨부)
- - api/figs/*.jpg    : 그림·표만 잘라 낸 이미지 800px, JPEG 70 (드라이브에도 올라감)
- - api/export/*.jsonl: 드라이브 '_drive_index_export'에 올릴 전체 색인 (책별, 파일당 40MB 이하)
+ - api/export/        : 드라이브 '_drive_index_export'와 똑같은 모양 (NAS Cloud Sync가 이 폴더를 그대로 올림)
+     *.jsonl          : 전체 색인 (책별, 파일당 40MB 이하)
+     figs/*.jpg       : 그림·표만 잘라 낸 이미지 800px, JPEG 70
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from .db import DB
 log = logging.getLogger(__name__)
 
 PAGE_W, FIG_W = 1200, 800
+FIGS = Path("export") / "figs"          # api/ 아래 그림 조각 폴더
 PAGE_Q, FIG_Q = 75, 70
 MAX_JSONL = 40 * 1024 * 1024
 KIND_KO = {"table": "표", "handwriting": "본문"}       # 나머지(그림·플로우차트·차트·도해·사진)는 '그림'
@@ -197,7 +199,7 @@ def make_assets(page: dict, out_api: Path, rend: _Renderer) -> list[str | None]:
                 whole = im.crop(_trim_box(im))
             crop = whole
         name = f"{key}_{i}.jpg"
-        _save_jpg(_fit_width(crop, FIG_W), out_api / "figs" / name, FIG_Q)
+        _save_jpg(_fit_width(crop, FIG_W), out_api / FIGS / name, FIG_Q)
         names.append(name)
     return names
 
@@ -260,7 +262,11 @@ def export_api(db: DB, out_dir: Path, budget_s: float | None = None) -> dict:
     from . import embed
     started = time.time()
     api = Path(out_dir) / "api"
-    for d in ("pages", "figs", "export"):
+    old_figs = api / "figs"
+    if old_figs.is_dir() and not (api / FIGS).exists():      # 예전 위치(api/figs) → 새 위치로 옮김 (다시 만들 필요 없음)
+        (api / "export").mkdir(parents=True, exist_ok=True)
+        old_figs.rename(api / FIGS)
+    for d in ("pages", FIGS, "export"):
         (api / d).mkdir(parents=True, exist_ok=True)
     man_path = api / "assets.json"
     try:
@@ -293,7 +299,7 @@ def export_api(db: DB, out_dir: Path, budget_s: float | None = None) -> dict:
     live = {p["page_key"] for p in pages}
     for k in list(manifest):
         if k not in live:                                      # 지워진 페이지의 이미지 정리
-            for f in [f"pages/{k}.jpg"] + [f"figs/{n}" for n in manifest[k].get("figs") or [] if n]:
+            for f in [f"pages/{k}.jpg"] + [f"{FIGS.as_posix()}/{n}" for n in manifest[k].get("figs") or [] if n]:
                 try:
                     (api / f).unlink()
                 except OSError:

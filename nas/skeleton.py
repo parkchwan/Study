@@ -36,6 +36,28 @@ API_DIR = os.path.join(DATA, "api")
 WORK = os.environ.get("SKEL_WORK", os.path.join(HERE, "work"))
 RCLONE = os.environ.get("RCLONE", os.path.join(HERE, "rclone"))
 REMOTE = os.environ.get("SKEL_REMOTE", "gdrive:건축시공기술사/_답안골격_교재그림/gemini")
+# Synology Cloud Sync 로 드라이브 gemini 폴더와 맞춰 둔 NAS 폴더. 여기에 gem_input.json 이 있으면 rclone 대신 이 폴더를 씀
+SKEL_DIR = os.environ.get("SKEL_DIR", "/volume1/gdrive")
+
+
+def local_mode():
+    return os.path.isfile(os.path.join(SKEL_DIR, "gem_input.json"))
+
+
+def copy_if_changed(src, dst):
+    """내용이 다를 때만 복사 (Cloud Sync 가 바뀐 파일만 올리게)."""
+    with open(src, "rb") as f:
+        data = f.read()
+    try:
+        with open(dst, "rb") as f:
+            if f.read() == data:
+                return False
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "wb") as f:
+        f.write(data)
+    return True
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
 INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt")
 N_REF, N_IMG = 8, 4
@@ -72,6 +94,15 @@ def rclone(*args):
 
 
 def pull(inp, prev):
+    if local_mode():
+        for n in INPUTS:
+            if os.path.isfile(os.path.join(SKEL_DIR, n)):
+                copy_if_changed(os.path.join(SKEL_DIR, n), os.path.join(inp, n))
+        od = os.path.join(SKEL_DIR, "out")
+        for n in (os.listdir(od) if os.path.isdir(od) else []):
+            if n.startswith("골격_") and n.endswith("회.json"):
+                copy_if_changed(os.path.join(od, n), os.path.join(prev, n))
+        return
     flt = []
     for n in INPUTS:
         flt += ["--include", "/" + n]
@@ -91,12 +122,20 @@ def push_status():
                     tail = f.readlines()[-300:]
                 src = os.path.join(WORK, "nightly_tail.log")
                 write_atomic(src, "".join(tail))
-            rclone("copyto", src, REMOTE + "/_nas_status/" + name)
+            if local_mode():
+                copy_if_changed(src, os.path.join(SKEL_DIR, "_nas_status", name))
+            else:
+                rclone("copyto", src, REMOTE + "/_nas_status/" + name)
     except Exception as e:
         log("  상태 올리기 실패: %s" % str(e)[:200])
 
 
 def push(out):
+    if local_mode():
+        for n in os.listdir(out):
+            if n.startswith("골격_") and n.endswith("회.json"):
+                copy_if_changed(os.path.join(out, n), os.path.join(SKEL_DIR, "out", n))
+        return
     rclone("copy", out, REMOTE + "/out", "--include", "/골격_*회.json")
 
 
@@ -451,8 +490,17 @@ def main():
         log("GEMINI_API_KEY 가 없습니다 (env.sh 확인)")
         return 1
     if not args.no_sync:
-        log("드라이브에서 입력 받는 중")
-        pull(inp, prev)
+        log("드라이브에서 입력 받는 중 (%s)" % ("Cloud Sync 폴더 " + SKEL_DIR if local_mode() else "rclone"))
+        try:
+            pull(inp, prev)
+        except Exception as e:              # 드라이브 한도 등으로 못 받아도, 예전에 받아 둔 입력이 있으면 그걸로 계속
+            log("  입력 받기 실패: %s" % str(e)[-300:])
+            if not os.path.exists(os.path.join(inp, "gem_input.json")):
+                write_atomic(os.path.join(WORK, "last_run.json"), json.dumps(
+                    {"at": time.strftime("%Y-%m-%d %H:%M"), "made": 0, "stopped": "드라이브에서 입력을 못 받음: " + str(e)[-200:]},
+                    ensure_ascii=False, indent=1))
+                return 1
+            log("  → 예전에 받아 둔 입력으로 계속")
     items = json.loads(read(os.path.join(inp, "gem_input.json"), "[]"))
     tpl = read(os.path.join(inp, "prompt.txt"), "")
     t1, t2 = read(os.path.join(inp, "type_1.txt"), ""), read(os.path.join(inp, "type_2.txt"), "")

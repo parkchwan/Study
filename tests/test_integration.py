@@ -78,12 +78,12 @@ def test_api_export_files(exported):
         assert im.width == 1200
         for it in l["it"]:
             if it[0] != "handwriting":
-                f = Image.open(api / "figs" / it[4])
+                f = Image.open(api / "export" / "figs" / it[4])
                 assert f.width == 800
     # 1쪽 표 조각은 페이지 전체가 아니라 표 부분만 (가로 800, 세로는 페이지보다 훨씬 짧음)
     p1 = next(l for l in lines if l["n"] == 1)
     tbl = next(it for it in p1["it"] if it[0] == "table")
-    assert Image.open(api / "figs" / tbl[4]).height < 600
+    assert Image.open(api / "export" / "figs" / tbl[4]).height < 600
     rows = [json.loads(l) for l in (api / "export" / "목구조 교재.jsonl").read_text(encoding="utf-8").splitlines()]
     assert set(rows[0]) == {"book", "page", "page_key", "kind", "title", "summary", "text", "page_img", "fig_img"}
     assert {r["kind"] for r in rows} >= {"표", "그림"}
@@ -314,3 +314,32 @@ def test_skeleton_uploads_during_run_and_stops_on_spend_cap(exported, tmp_path):
     assert sum(1 for c in FakeGemini.calls if c[0] == "cap") == 1        # 결제 한도는 한 번 보고 바로 멈춤
     g = json.loads((work / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]
     assert len(g) == 3
+
+
+def test_skeleton_cloud_sync_folder_mode(exported, tmp_path):
+    """Synology Cloud Sync 로 맞춰 둔 폴더(SKEL_DIR)가 있으면 rclone 없이 그 폴더에서 읽고 씀."""
+    out, _, _ = exported
+    sd = tmp_path / "gdrive"
+    (sd / "out").mkdir(parents=True)
+    items = [{"id": "140-1-1", "r": 140, "p": 1, "q": "CLT와 GLT 비교", "ref": ""},
+             {"id": "139-1-1", "r": 139, "p": 1, "q": "베이크 아웃", "ref": ""}]
+    (sd / "gem_input.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    (sd / "prompt.txt").write_text("{{Q}} {{TYPE}} {{REF}}", encoding="utf-8")
+    (sd / "out" / "골격_139회.json").write_text(json.dumps({"items": {"139-9-9": {"src": "old"}}}), encoding="utf-8")
+    work = tmp_path / "work4"
+    FakeGemini.calls = []
+    FakeGemini.reply = {"toc": [{"h": "a", "kw": []}, {"h": "b", "kw": []}, {"h": "c", "kw": []}]}
+    srv = HTTPServer(("127.0.0.1", 0), FakeGemini)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        r = subprocess.run([sys.executable, "-I", str(NAS / "skeleton.py")], capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, DRIVE_INDEX_DIR=str(out), SKEL_WORK=str(work), SKEL_DIR=str(sd),
+                                    GEMINI_API_KEY="k", SKEL_SLEEP="0", RCLONE="/nonexistent/rclone", API_PORT="1",
+                                    GEMINI_BASE=f"http://127.0.0.1:{srv.server_port}/v1beta"))
+    finally:
+        srv.shutdown()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Cloud Sync" in r.stdout
+    assert set(json.loads((sd / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]) == {"140-1-1"}
+    assert set(json.loads((sd / "out" / "골격_139회.json").read_text(encoding="utf-8"))["items"]) == {"139-1-1", "139-9-9"}
+    assert json.loads((sd / "_nas_status" / "last_run.json").read_text(encoding="utf-8"))["made"] == 2
