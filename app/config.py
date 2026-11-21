@@ -26,6 +26,8 @@ class Settings:
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", ""))
     # 원본 PDF도 NAS로 복사 → 태블릿에서 '원본 열기'로 해당 쪽을 바로 봄 (처음 한 번은 용량만큼 복사 시간)
     export_originals: bool = field(default_factory=lambda: os.getenv("EXPORT_ORIGINALS", "on").lower() in ("on", "1", "true", "yes"))
+    # 학습 앱 연동용 내보내기 (EXPORT_DIR/api: 페이지 1200px·그림 조각 800px·JSONL). off면 안 함
+    api_export: bool = field(default_factory=lambda: os.getenv("API_EXPORT", "on").lower() in ("on", "1", "true", "yes"))
     # 폴더 칸에 처음 채워 둘 기본 폴더 (화면에서 바꿀 수 있음)
     default_folder: str = field(default_factory=lambda: os.getenv("DEFAULT_FOLDER", r"G:\내 드라이브\건축시공기술사"))
 

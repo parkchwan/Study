@@ -87,7 +87,7 @@ class IndexJob:
             st["ai_error"] = router.last_error
             self._build_search_aids(st, router)
             if settings.export_dir:            # NAS 보기 전용 사이트 자동 갱신
-                st["phase"] = "NAS로 내보내는 중"
+                st["phase"] = "NAS로 내보내는 중 (학습 앱용 그림 조각은 처음 한 번 오래 걸림)"
                 from .export import export_site
                 try:
                     export_site(self.db, Path(settings.export_dir))
@@ -131,7 +131,8 @@ class IndexJob:
             return
         from .export import export_site
         try:
-            export_site(self.db, Path(settings.export_dir))
+            # 그림 자르기는 한 번에 3분까지만 (처음엔 수천 쪽이라 몇 번에 나눠서 진행)
+            export_site(self.db, Path(settings.export_dir), api_budget_s=180)
             st["last_export"] = time.time()
         except OSError as e:
             st["last_export"] = time.time()

@@ -140,7 +140,7 @@ def _sync_originals(db: DB, dst: Path, keep: set[str]) -> None:
             d.unlink()
 
 
-def export_site(db: DB, out_dir: Path) -> dict:
+def export_site(db: DB, out_dir: Path, api_budget_s: float | None = None) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     from . import embed
@@ -173,7 +173,11 @@ def export_site(db: DB, out_dir: Path) -> dict:
     html = html.replace("const STATIC_MODE = false;", "const STATIC_MODE = true;", 1)
     (out_dir / "index.html").write_text(html, encoding="utf-8")
     tmp.replace(out_dir / "data.json")          # 마지막에 교체 → 보는 중에도 깨지지 않음
-    return {"dir": str(out_dir), "pages": len(pages)}
+    res = {"dir": str(out_dir), "pages": len(pages)}
+    if settings.api_export:                     # 학습 앱 연동 (NAS 검색 API·드라이브 내보내기·골격 생성용)
+        from .apiexport import export_api
+        res["api"] = export_api(db, out_dir, budget_s=api_budget_s)
+    return res
 
 
 if __name__ == "__main__":      # python -m app.export [폴더]

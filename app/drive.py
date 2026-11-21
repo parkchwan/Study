@@ -131,6 +131,10 @@ LOCAL_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", 
               ".docx", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
 
 
+# 색인하지 않을 폴더 (학습 앱 연동용으로 NAS가 드라이브에 올리는 결과물)
+SKIP_DIRS = {"_drive_index_export"}
+
+
 def local_dir(value: str) -> Path | None:
     """입력값이 내 컴퓨터의 폴더 경로면 Path 반환."""
     v = value.strip().strip('"')
@@ -159,6 +163,8 @@ class LocalFolder:
         for p in sorted(self.root.rglob("*")):
             if not p.is_file() or p.suffix.lower() not in LOCAL_EXTS or p.name.startswith(("~$", ".")):
                 continue
+            if any(part in SKIP_DIRS for part in p.relative_to(self.root).parts[:-1]):
+                continue        # NAS가 올린 내보내기(그림 조각 수만 장)를 다시 색인하지 않게
             st = p.stat()
             rel = p.relative_to(self.root)
             key = path_key(p)

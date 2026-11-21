@@ -98,9 +98,31 @@ def export():
     if not settings.export_dir:
         raise HTTPException(400, ".env에 EXPORT_DIR(예: \\\\PCHSNAS\\web\\drive-index)를 설정하세요.")
     try:
-        return export_site(db, Path(settings.export_dir))
+        res = export_site(db, Path(settings.export_dir), api_budget_s=30)
     except OSError as e:
         raise HTTPException(500, f"내보내기 실패 (NAS 폴더 접근 확인): {e}")
+    api = res.get("api") or {}
+    if api.get("images_pending") and not (_api_thread and _api_thread.is_alive()) and not job.status().get("running"):
+        _start_api_export()         # 남은 그림 조각은 뒤에서 계속 만듦 (처음엔 수천 쪽이라 오래 걸림)
+        res["api_background"] = True
+    return res
+
+
+_api_thread = None
+
+
+def _start_api_export():
+    import threading
+    from .apiexport import export_api
+    global _api_thread
+
+    def run():
+        try:
+            export_api(db, Path(settings.export_dir))
+        except Exception as e:
+            logging.warning("학습 앱용 내보내기 실패: %s", e)
+    _api_thread = threading.Thread(target=run, daemon=True)
+    _api_thread.start()
 
 
 @app.get("/api/status")
