@@ -112,7 +112,7 @@
     <span class="status" id="status">불러오는 중…</span>
   </div>
   <div class="row">
-    <textarea id="q" rows="1" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp · 글자 그대로 찾기는 &quot;압입강관&quot;처럼 따옴표"></textarea>
+    <textarea id="q" rows="1" placeholder="검색: 예) 기온에 따른 강도, 타설 스피드, jsp, 필기한 단어"></textarea>
     <button id="camBtn" hidden title="문제를 찍거나 사진을 고르면 AI가 문제를 읽고 관련 자료를 찾아 줌 (1번에 약 2원)">📷 문제로 검색</button>
     <input id="camInput" type="file" accept="image/*" hidden>
     <button id="installBtn" hidden title="태블릿에 앱으로 설치하면 어느 화면에서든 '공유 → 시각자료 색인'으로 검색">📲 앱으로 설치</button>
@@ -239,10 +239,8 @@ function renderMore() {
 function search() {
   const my = ++seq;
   if (!DATA) return;
-  const first = rank(state.q, state.kind, null);
-  showResults(first);                                     // 1) 글자·동의어 검색 → 즉시 표시
+  showResults(rank(state.q, state.kind, null));          // 1) 글자·동의어 검색 → 즉시 표시
   clearTimeout(semTimer);
-  if (first.strict) return;                               // "따옴표" 검색은 정확히 일치만 (의미·AI 생략)
   if (!state.q || (!EMB && !aiOn())) return;
   semTimer = setTimeout(async () => {                     // 입력이 멈추면
     let res = null;
@@ -271,11 +269,6 @@ function showResults(results, keepWeak) {
       + (ai ? `🎯 AI가 고른 결과 ${ai}쪽` : `관련 높은 결과 ${strong.length - exa}쪽${sem ? ` (뜻이 비슷한 결과 ${sem}쪽 포함)` : ""}`)
       + (weak ? ` · <a href="#" id="weakLink">${weakShown ? "관련도 낮은 결과 숨기기" : `관련도 낮은 결과 ${weak}쪽 더 보기`}</a>` : "")
     : "";
-  if (results.strict) {                                   // "따옴표" 검색: 있다/없다를 분명하게
-    const w = esc(state.q.replace(/^\s*["“”'‘’]|["“”'‘’]\s*$/g, ""));
-    $("count").innerHTML = results.length ? `✅ "${w}" 이(가) 그대로 들어 있는 페이지 ${results.length}쪽` : "";
-    $("empty").textContent = `"${w}" 이(가) 그대로 들어 있는 페이지가 없어요. (따옴표를 빼면 비슷한 자료를 찾아요)`;
-  } else $("empty").textContent = "결과가 없습니다.";
   const wl = document.getElementById("weakLink");
   if (wl) wl.onclick = e => { e.preventDefault(); weakShown = !weakShown; showResults(lastAll, true); };
   $("grid").innerHTML = ""; shown = 0;
@@ -552,14 +545,6 @@ function rank(q, kind, qv) {
   if (kind) pages = pages.filter(p => p.items.some(it => it.kind === kind));
   const view = p => kind ? { ...p, items: p.items.filter(it => it.kind === kind) } : p;
   if (!q) return pages.map(view);
-  // "따옴표"로 감싼 검색 = 그 글자가 그대로 있는 페이지만 (동의어·의미·AI 없이). 띄어쓰기는 무시
-  const quoted = q.match(/^\s*["“”'‘’](.+?)["“”'‘’]\s*$/);
-  if (quoted) {
-    const ph = norm(quoted[1]);
-    const r = ph ? pages.filter(p => p.hayN.includes(ph)).map(p => ({ ...view(p), _exact: true, _strict: true })) : [];
-    r.strict = true;
-    return r;
-  }
   const units = parseQuery(q);
   if (!units.length) return pages.map(view);
   // 1) 단위마다 어느 페이지에 있는지 (2=입력 그대로, 1=동의어)와 처음 나온 위치
@@ -583,8 +568,7 @@ function rank(q, kind, qv) {
   const phrase = norm(q), phrase2 = units.map(u => u.text).join("");
   // (낱말 하나짜리 검색은 해당 없음: '철근콘크리트'만 쳐서 수백 쪽이 전부 '정확히 일치'가 되는 걸 막음)
   const nTok = q.trim().split(/\s+/).filter(Boolean).length;
-  // 문장·구절로 검색했을 때, 또는 붙여 쓴 한 단어가 여러 낱말로 나뉜 경우(예: 압입강관 → 압입+강관)
-  const multi = nTok >= 3 || (nTok >= 2 && phrase.length >= 10) || (nTok === 1 && units.length >= 2 && phrase.length >= 4);
+  const multi = nTok >= 3 || (nTok >= 2 && phrase.length >= 10);     // 문장·구절로 검색했을 때만
   // 문제 문장의 앞부분(쉼표·'과/와/및' 앞)만 그대로 있어도 일치로 봄: "…발생원인과 보수공법" ↔ "…발생원인, 보수.보강공법"
   const lead = norm(q.split(/,|，|·|\s및\s|(?<=[가-힣])[과와]\s/)[0]);
   const exactOf = p => multi && (p.hayN.includes(phrase) || (phrase2.length >= 6 && p.hayN.includes(phrase2))
