@@ -116,6 +116,13 @@ DSM 방화벽을 켜 두었다면 **8765 포트를 192.168.0.0/24 에서만** �
     sudo sh -c '. /volume1/drive-index-nas/env.sh; $(cat /volume1/drive-index-nas/.python) /volume1/drive-index-nas/skeleton.py --limit 1'
     ```
 
+## 결과 확인 (NAS에 접속하지 않고)
+- 드라이브 `건축시공기술사/_답안골격_교재그림/gemini/_nas_status/`
+  - `last_run.json`: 이번 실행에서 만든 문제 수, 남은 수, 멈춘 이유, 토큰 수 (5문제마다 갱신)
+  - `nightly.log`: 로그 끝 300줄
+- 골격은 회차가 끝날 때마다, 또는 5문제마다 `gemini/out/` 에 올라가요.
+- 한 번 실행에 최대 40문제 (`env.sh` 의 `SKEL_MAX`)
+
 ## 참고
 
 - **Tailscale(외부)에서 API 쓰기**:

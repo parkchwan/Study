@@ -28,3 +28,6 @@ fi
 echo "[2] 답안 골격 생성"
 "$PY" "$DIR/skeleton.py"
 echo "===== $(date '+%H:%M') 끝 ====="
+# 로그 끝부분을 드라이브 gemini/_nas_status/ 에 올림 (NAS에 접속하지 않고도 결과 확인)
+tail -n 300 "$LOG" > "$DIR/work/nightly_tail.log"
+"$RCLONE" copyto "$DIR/work/nightly_tail.log" "${SKEL_REMOTE:-gdrive:건축시공기술사/_답안골격_교재그림/gemini}/_nas_status/nightly.log" >/dev/null 2>&1

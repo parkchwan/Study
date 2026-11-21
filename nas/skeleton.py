@@ -39,6 +39,8 @@ REMOTE = os.environ.get("SKEL_REMOTE", "gdrive:건축시공기술사/_답안골�
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
 INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt")
 N_REF, N_IMG = 8, 4
+DEFAULT_PER_RUN = 40      # 한 번 실행에 만드는 최대 문제 수 (SKEL_MAX 로 바꿈, 0이면 이 값). 유료 키 비용 안전장치
+FLUSH_EVERY = 5           # 5문제마다(또는 한 회차가 끝날 때마다) 드라이브에 올림
 
 
 def log(*a):
@@ -75,6 +77,23 @@ def pull(inp, prev):
         flt += ["--include", "/" + n]
     rclone("copy", REMOTE, inp, *flt)
     rclone("copy", REMOTE + "/out", prev, "--include", "/골격_*회.json")
+
+
+def push_status():
+    """진행 상황(last_run.json)과 로그 끝부분을 드라이브 gemini/_nas_status/ 에 올림 → NAS에 접속하지 않고도 확인."""
+    try:
+        for name in ("last_run.json", "nightly.log"):
+            src = os.path.join(WORK, name)
+            if not os.path.exists(src):
+                continue
+            if name.endswith(".log"):              # 로그는 끝부분 300줄만
+                with open(src, encoding="utf-8", errors="replace") as f:
+                    tail = f.readlines()[-300:]
+                src = os.path.join(WORK, "nightly_tail.log")
+                write_atomic(src, "".join(tail))
+            rclone("copyto", src, REMOTE + "/_nas_status/" + name)
+    except Exception as e:
+        log("  상태 올리기 실패: %s" % str(e)[:200])
 
 
 def push(out):
@@ -128,6 +147,7 @@ def call_gemini(model, key, prompt, images):
     body = json.dumps({"contents": [{"parts": parts}],
                        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}}).encode("utf-8")
     url = "%s/models/%s:generateContent" % (GEMINI_BASE, model)
+    minute_waits = 0
     for attempt in range(6):
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "x-goog-api-key": key})
         try:
@@ -139,9 +159,14 @@ def call_gemini(model, key, prompt, images):
             return txt, u
         except urllib.error.HTTPError as e:
             msg = e.read().decode("utf-8", "replace")
+            if e.code == 402 or (e.code == 429 and re.search(r"spend|billing|cap\b|prepa", msg, re.I)):
+                raise DailyLimit("결제 한도(월 지출 한도·잔액) 도달: " + msg[:200])
             if e.code == 429:
                 if re.search(r"PerDay|per day|daily", msg, re.I):
-                    raise DailyLimit(msg[:300])
+                    raise DailyLimit("하루 무료 한도 도달: " + msg[:200])
+                minute_waits += 1
+                if minute_waits > 3:          # 몇 번 기다려도 계속 막히면 오늘은 그만 (밤새 헛돌지 않게)
+                    raise DailyLimit("한도가 계속 막힘: " + msg[:200])
                 log("  분당 한도 - 60초 대기")
                 time.sleep(60)
                 continue
@@ -444,60 +469,107 @@ def main():
 
     todo = [it for it in items if (not args.only or it["id"] == args.only)
             and (args.redo or not os.path.exists(os.path.join(raw2, it["id"] + ".json")))]
-    log("남은 문제 %d / 전체 %d" % (len(todo), len(items)))
-    stopped, made, tokens = "", 0, 0
-    sleep = float(os.environ.get("SKEL_SLEEP", "7"))
-    for n, it in enumerate(todo, 1):
-        if args.limit and made >= args.limit:
-            stopped = "이번 실행 최대 %d문제" % args.limit
-            break
-        log("[%d/%d] %s회 %s교시 %s" % (n, len(todo), it["r"], it["p"], it["q"][:40]))
-        picks = related(index, it["q"], key)
-        imgs, used = page_images(picks)
-        # 첨부 이미지를 ①②③… 순서와 맞추려고, 이미지가 있는 페이지를 앞으로
-        picks = [picks[i] for i in used] + [r for i, r in enumerate(picks) if i not in used]
-        ref = build_ref(it.get("ref") or "", picks, len(imgs))
-        prompt = tpl.replace("{{Q}}", it["q"]).replace("{{TYPE}}", t1 if it["p"] == 1 else t2).replace("{{REF}}", ref)
-        obj = None
+    limit = args.limit if args.limit > 0 else DEFAULT_PER_RUN
+    log("남은 문제 %d / 전체 %d · 이번 실행 최대 %d문제" % (len(todo), len(items), limit))
+    st = {"started": time.strftime("%Y-%m-%d %H:%M"), "model": model, "made": 0, "errors": 0, "tokens_in": 0,
+          "tokens_out": 0, "stopped": "", "uploaded": [], "running": True, "current": ""}
+
+    def flush(final=False):
+        """회차 파일을 다시 만들고 드라이브에 올림 + 진행 상황 기록. 중간에 끊겨도 만든 만큼은 올라가게."""
         try:
-            for _ in range(2):
-                raw, usage = call_gemini(model, key, prompt, imgs)
-                tokens += int(usage.get("totalTokenCount") or 0)
-                obj = parse_json(raw)
-                if obj and len(obj.get("toc") or []) >= 3:
+            changed = build_rounds(items, raw2, prev, out)
+            if changed and not args.no_sync:
+                log("드라이브에 올리는 중: %s" % ", ".join(changed))
+                push(out)
+                st["uploaded"] = sorted(set(st["uploaded"]) | set(changed))
+        except Exception as e:                  # 업로드가 실패해도 생성은 계속
+            log("  드라이브 올리기 실패(다음에 다시): %s" % str(e)[:300])
+        st["left"] = sum(1 for it in items if not os.path.exists(os.path.join(raw2, it["id"] + ".json")))
+        st["at"] = time.strftime("%Y-%m-%d %H:%M")
+        st["running"] = not final
+        write_atomic(os.path.join(WORK, "last_run.json"), json.dumps(st, ensure_ascii=False, indent=1))
+        if not args.no_sync:
+            push_status()
+
+    sleep = float(os.environ.get("SKEL_SLEEP", "7"))
+    errors_in_row, since_flush = 0, 0
+    try:
+        for n, it in enumerate(todo, 1):
+            if st["made"] >= limit:
+                st["stopped"] = "이번 실행 최대 %d문제까지 (다음 실행 때 이어서)" % limit
+                break
+            st["current"] = it["id"]
+            log("[%d/%d] %s회 %s교시 %s" % (n, len(todo), it["r"], it["p"], it["q"][:40]))
+            try:
+                rec, usage = make_one(it, index, key, model, tpl, t1, t2)
+            except (DailyLimit, Fatal):
+                raise
+            except Exception as e:              # 한 문제 실패가 전체를 멈추지 않게 (검색 서버 지연 등)
+                st["errors"] += 1
+                errors_in_row += 1
+                log("  오류로 건너뜀: %s: %s" % (e.__class__.__name__, str(e)[:200]))
+                if errors_in_row >= 3:
+                    st["stopped"] = "연속 오류 3번 → 중단 (로그 확인)"
                     break
-                log("  목차 부족/JSON 오류 - 다시 생성")
-                obj = None
-        except DailyLimit:
-            stopped = "오늘 무료 한도 소진 → 내일 01:00에 이어서"
-            break
-        except Fatal as e:
-            stopped = str(e)
-            break
-        if not obj:
-            log("  건너뜀 (다음 실행 때 다시)")
-            continue
-        for fg in [obj.get("fig")] + list(obj.get("figs") or []):
-            attach_src(fg, index, picks, key)
-        src_check(obj, index)
-        obj["refs"] = ["%s p.%d" % (r["book"], r["page"]) for r in picks]
-        rec = {"src": "gemini"}
-        rec.update(obj)
-        write_atomic(os.path.join(raw2, it["id"] + ".json"), json.dumps(rec, ensure_ascii=False))
-        made += 1
-        log("  저장 · 출처 확인 %d개 맞음, 근거 없음 %d개" % (rec["src_check"]["ok"], len(rec["src_check"]["ng"])))
-        if n < len(todo):
-            time.sleep(sleep)
-    changed = build_rounds(items, raw2, prev, out)
-    if changed and not args.no_sync:
-        log("드라이브에 올리는 중: %s" % ", ".join(changed))
-        push(out)
-    left = sum(1 for it in items if not os.path.exists(os.path.join(raw2, it["id"] + ".json")))
-    status = {"at": time.strftime("%Y-%m-%d %H:%M"), "made": made, "left": left, "tokens": tokens,
-              "stopped": stopped, "changed": changed, "model": model}
-    write_atomic(os.path.join(WORK, "last_run.json"), json.dumps(status, ensure_ascii=False, indent=1))
-    log("끝: 이번에 %d문제, 남은 %d문제 %s" % (made, left, ("(" + stopped + ")") if stopped else ""))
+                continue
+            errors_in_row = 0
+            st["tokens_in"] += usage[0]
+            st["tokens_out"] += usage[1]
+            if rec is None:
+                log("  건너뜀 (다음 실행 때 다시)")
+                continue
+            write_atomic(os.path.join(raw2, it["id"] + ".json"), json.dumps(rec, ensure_ascii=False))
+            st["made"] += 1
+            since_flush += 1
+            log("  저장 · 출처 확인 %d개 맞음, 근거 없음 %d개 · 토큰 입력 %d 출력 %d" % (
+                rec["src_check"]["ok"], len(rec["src_check"]["ng"]), usage[0], usage[1]))
+            nxt = todo[n] if n < len(todo) else None
+            if since_flush >= FLUSH_EVERY or nxt is None or nxt["r"] != it["r"]:   # 한 회차가 끝났거나 5문제마다
+                flush()
+                since_flush = 0
+            if nxt is not None:
+                time.sleep(sleep)
+    except DailyLimit as e:
+        st["stopped"] = "Gemini 한도 → 다음 실행 때 이어서 (%s)" % str(e)[:160]
+        log("  " + st["stopped"])
+    except Fatal as e:
+        st["stopped"] = str(e)
+        log("  " + st["stopped"])
+    finally:
+        st["current"] = ""
+        flush(final=True)
+    log("끝: 이번에 %d문제, 남은 %d문제 %s" % (st["made"], st["left"], ("(" + st["stopped"] + ")") if st["stopped"] else ""))
     return 0
+
+
+def make_one(it, index, key, model, tpl, t1, t2):
+    """문제 하나 → (골격 레코드 또는 None, (입력 토큰, 출력 토큰))."""
+    picks = related(index, it["q"], key)
+    imgs, used = page_images(picks)
+    # 첨부 이미지를 ①②③… 순서와 맞추려고, 이미지가 있는 페이지를 앞으로
+    picks = [picks[i] for i in used] + [r for i, r in enumerate(picks) if i not in used]
+    ref = build_ref(it.get("ref") or "", picks, len(imgs))
+    prompt = tpl.replace("{{Q}}", it["q"]).replace("{{TYPE}}", t1 if it["p"] == 1 else t2).replace("{{REF}}", ref)
+    t_in = t_out = 0
+    obj = None
+    for _ in range(2):
+        raw, usage = call_gemini(model, key, prompt, imgs)
+        t_in += int(usage.get("promptTokenCount") or 0)
+        t_out += int(usage.get("candidatesTokenCount") or 0) + int(usage.get("thoughtsTokenCount") or 0)
+        obj = parse_json(raw)
+        if obj and len(obj.get("toc") or []) >= 3:
+            break
+        log("  목차 부족/JSON 오류 - 다시 생성")
+        obj = None
+    if not obj:
+        return None, (t_in, t_out)
+    for fg in [obj.get("fig")] + list(obj.get("figs") or []):
+        attach_src(fg, index, picks, key)
+    src_check(obj, index)
+    obj["refs"] = ["%s p.%d" % (r["book"], r["page"]) for r in picks]
+    rec = {"src": "gemini"}
+    rec.update(obj)
+    return rec, (t_in, t_out)
 
 
 if __name__ == "__main__":

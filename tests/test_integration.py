@@ -256,3 +256,61 @@ def test_recent_questions_exported(tmp_path, monkeypatch):
     assert [q["r"] for q in qs] == list(range(119, 140))
     assert set(qs[0]) == {"id", "r", "p", "q"}
     assert load_questions(tmp_path / "none.json") == []
+
+
+def test_skeleton_uploads_during_run_and_stops_on_spend_cap(exported, tmp_path):
+    """밤새 도는 동안에도 회차가 끝날 때마다(또는 5문제마다) 드라이브에 올리고, 진행 상황도 올림.
+    결제 한도(월 지출 한도) 429는 분당 한도처럼 계속 기다리지 않고 바로 멈춤."""
+    out, _, _ = exported
+    work = tmp_path / "work3"
+    (work / "in").mkdir(parents=True)
+    items = [{"id": f"140-1-{i}", "r": 140, "p": 1, "q": f"CLT와 GLT 비교 {i}", "ref": ""} for i in range(1, 4)] + \
+            [{"id": f"139-1-{i}", "r": 139, "p": 1, "q": f"베이크 아웃 {i}", "ref": ""} for i in range(1, 6)]
+    (work / "in" / "gem_input.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    (work / "in" / "prompt.txt").write_text("{{Q}} {{TYPE}} {{REF}}", encoding="utf-8")
+    calls = tmp_path / "rclone_calls.txt"
+    fake = tmp_path / "rclone"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
+    fake.chmod(0o755)
+
+    class CapAfter6(FakeGemini):
+        def do_POST(self):
+            if len(FakeGemini.calls) >= 6:
+                self.rfile.read(int(self.headers["Content-Length"]))
+                FakeGemini.calls.append(("cap", None, None))
+                msg = b'{"error":{"code":429,"message":"Your project has exceeded its monthly spending cap."}}'
+                self.send_response(429); self.end_headers(); self.wfile.write(msg); return
+            super().do_POST()
+
+    FakeGemini.calls = []
+    FakeGemini.reply = {"toc": [{"h": "a", "kw": ["직교적층"]}, {"h": "b", "kw": []}, {"h": "c", "kw": []}], "fig": {"t": "x"}}
+    # FakeGemini 는 3번째 호출부터 '하루 한도'를 돌려주므로, 이 테스트에서는 그 규칙을 끔
+    srv = HTTPServer(("127.0.0.1", 0), CapAfter6)
+    orig = FakeGemini.do_POST
+
+    def ok_post(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeGemini.calls.append((self.path, None, body))
+        out_ = json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps(FakeGemini.reply)}]}}],
+                           "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 50, "thoughtsTokenCount": 10}})
+        self.send_response(200); self.end_headers(); self.wfile.write(out_.encode())
+    FakeGemini.do_POST = ok_post
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        r = subprocess.run([sys.executable, "-I", str(NAS / "skeleton.py")], capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, DRIVE_INDEX_DIR=str(out), SKEL_WORK=str(work), GEMINI_API_KEY="k",
+                                    SKEL_SLEEP="0", RCLONE=str(fake), API_PORT="1", SKEL_MAX="0",
+                                    GEMINI_BASE=f"http://127.0.0.1:{srv.server_port}/v1beta"))
+    finally:
+        srv.shutdown(); FakeGemini.do_POST = orig
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = calls.read_text()
+    pushes = [l for l in log.splitlines() if l.startswith("copy ") and "/out" in l and str(work) in l.split()[1]]
+    assert len(pushes) >= 2, log            # 140회가 끝났을 때 + 마지막
+    assert "_nas_status/last_run.json" in log
+    st = json.loads((work / "last_run.json").read_text(encoding="utf-8"))
+    assert st["made"] == 6 and st["running"] is False and "결제 한도" in st["stopped"], st
+    assert st["tokens_in"] == 600 and st["tokens_out"] == 360
+    assert sum(1 for c in FakeGemini.calls if c[0] == "cap") == 1        # 결제 한도는 한 번 보고 바로 멈춤
+    g = json.loads((work / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]
+    assert len(g) == 3
