@@ -562,6 +562,12 @@ def main():
             push_status()
 
     sleep = float(os.environ.get("SKEL_SLEEP", "7"))
+    # 시작하자마자 "running": true 를 올려 둠 → 학습앱 야간 검수가 작업 중엔 건너뛰게
+    st["at"] = time.strftime("%Y-%m-%d %H:%M")
+    st["left"] = len(todo)
+    write_atomic(os.path.join(WORK, "last_run.json"), json.dumps(st, ensure_ascii=False, indent=1))
+    if not args.no_sync:
+        push_status()
     errors_in_row, since_flush = 0, 0
     fresh = set()                       # 이번 실행에서 새로 만든 문제 (이것만 드라이브 골격을 덮어씀)
     try:
