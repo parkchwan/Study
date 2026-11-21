@@ -23,22 +23,24 @@ for f in dindex.py api_server.py skeleton.py api.sh nightly.sh setkey.sh env.sh.
 done
 echo "$PY" > "$DST/.python"
 if [ ! -f "$DST/env.sh" ]; then cp "$DST/env.sh.example" "$DST/env.sh"; fi
-chmod 700 "$DST"; chmod 600 "$DST/env.sh"
+chmod 700 "$DST"; chmod 600 "$DST/env.sh"; chmod 755 "$DST"/*.sh
 
 if [ ! -x "$DST/rclone" ]; then
   case "$(uname -m)" in
     armv7*|armv8l) A=arm-v7 ;; aarch64|arm64) A=arm64 ;; x86_64) A=amd64 ;; i686|i386) A=386 ;; *) A=arm ;;
   esac
   echo "rclone ($A) 내려받는 중..."
-  "$PY" - "$A" "$DST" <<'PYEOF' || echo "rclone 내려받기 실패 → PC에서 rclone-current-linux-$A.zip 을 받아 압축 속 rclone 을 $DST 에 넣고 chmod 755"
-import io, sys, urllib.request, zipfile, os
-a, dst = sys.argv[1], sys.argv[2]
-data = urllib.request.urlopen("https://downloads.rclone.org/rclone-current-linux-%s.zip" % a, timeout=120).read()
-z = zipfile.ZipFile(io.BytesIO(data))
+  URL="https://downloads.rclone.org/rclone-current-linux-$A.zip"
+  curl -fsSL -o "$DST/rclone.zip" "$URL" 2>/dev/null || wget -q -O "$DST/rclone.zip" "$URL" || true
+  "$PY" - "$DST" <<'PYEOF' || echo "rclone 내려받기 실패 → PC에서 rclone-current-linux-$A.zip 을 받아 압축 속 rclone 을 $DST 에 넣고 chmod 755"
+import os, sys, zipfile
+dst = sys.argv[1]
+z = zipfile.ZipFile(os.path.join(dst, "rclone.zip"))
 name = [n for n in z.namelist() if n.endswith("/rclone")][0]
 open(os.path.join(dst, "rclone"), "wb").write(z.read(name))
 os.chmod(os.path.join(dst, "rclone"), 0o755)
 PYEOF
+  rm -f "$DST/rclone.zip"
 fi
 [ -x "$DST/rclone" ] && "$DST/rclone" version | head -1
 
