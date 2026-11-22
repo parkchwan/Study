@@ -49,9 +49,11 @@ class IndexJob:
             router = VisionRouter(self.db)
             st["ai_enabled"] = router.enabled
 
+            root_key = getattr(drive, "root_key", None)
+            if root_key:
+                self._follow_moves(files, root_key, st)
             live_ids = {f["file_id"] for f in files}
             # 이번에 색인하는 폴더 '안에서' 사라진 파일만 정리 (다른 폴더로 색인해 둔 자료는 그대로 둠)
-            root_key = getattr(drive, "root_key", None)
             scope = self.db.files_under(root_key) if root_key else self.db.drive_api_files()
             for gone in scope - live_ids:
                 self._remove_renders(self.db.page_keys(gone))
@@ -102,6 +104,35 @@ class IndexJob:
         finally:
             st["running"] = False
             st["finished"] = time.time()
+
+    def _follow_moves(self, files: list[dict], root_key: str, st: dict) -> None:
+        """폴더를 옮기거나 정리한 파일 알아보기: 사라진 파일과 이름·크기가 같은 새 파일이 하나뿐이면 같은 파일로 봄.
+
+        원래 file_id를 그대로 써서 페이지 이미지·그림 조각 이름(학습앱 골격의 src_img)·AI 요약·의미 벡터를
+        다시 만들지 않음 (비용 0, 연결 유지). 위치(path·abs_path)만 새로 기록."""
+        known = self.db.files_info_under(root_key)
+        live = {f["file_id"] for f in files}
+        pool: dict[tuple, list[str]] = {}
+        for fid, (name, vk) in known.items():
+            if fid not in live:
+                size = vk.split("|")[0].split("-")[0]
+                if size:
+                    pool.setdefault((name, size), []).append(fid)
+        if not pool:
+            return
+        moved = 0
+        for meta in files:
+            if meta["file_id"] in known:
+                continue
+            cand = pool.get((meta["name"], (meta.get("version_key") or "").split("-")[0]))
+            if cand and len(cand) == 1:
+                old = cand.pop()
+                meta["file_id"] = old
+                self.db.relocate(old, meta["path"], meta.get("_local_key"))
+                moved += 1
+        if moved:
+            st["moved"] = moved
+            log.info("옮긴 파일 %d개를 알아보고 기존 색인을 그대로 씀", moved)
 
     def _build_search_aids(self, st: dict, router: VisionRouter) -> None:
         """동의어 사전 + 의미 검색 준비 (새로 생긴 용어·바뀐 페이지만, 글자만 보내므로 저렴)."""

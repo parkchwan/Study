@@ -131,6 +131,20 @@ class DB:
                 out.add(r["file_id"])
         return out
 
+    def files_info_under(self, root: str) -> dict[str, tuple[str, str]]:
+        """이 폴더 안 파일들의 {file_id: (이름, 버전)} — 옮긴 파일 알아보기용."""
+        ids = self.files_under(root)
+        out = {}
+        for r in self.conn.execute("SELECT file_id, name, version_key FROM files"):
+            if r["file_id"] in ids:
+                out[r["file_id"]] = (r["name"], r["version_key"] or "")
+        return out
+
+    def relocate(self, file_id: str, path: str, abs_path: str | None) -> None:
+        """파일을 다른 폴더로 옮겼을 때 위치만 바꿈 (페이지·그림·개념·의미벡터는 그대로)."""
+        with self.lock, self.conn:
+            self.conn.execute("UPDATE files SET path=?, abs_path=? WHERE file_id=?", (path, abs_path, file_id))
+
     def delete_file(self, file_id: str) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM items WHERE file_id=?", (file_id,))

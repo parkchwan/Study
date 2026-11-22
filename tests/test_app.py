@@ -753,3 +753,29 @@ def test_real_page_total_saved_and_exported(env, monkeypatch):
     db.conn.execute("UPDATE files SET page_count=2"); db.conn.commit()
     export_site(db, out)
     assert json.loads((out / "data.json").read_text(encoding="utf-8"))["files"][0][3] == 3
+
+
+def test_moved_files_keep_their_index(env, monkeypatch):
+    """폴더를 정리해 파일을 옮겨도 같은 파일로 알아보고 다시 처리하지 않음 (page_key·그림 이름 유지)."""
+    import shutil
+    tmp, db, job, settings = env
+    from app.drive import LocalFolder
+    root = tmp / "건축시공기술사"
+    (root / "교재").mkdir(parents=True)
+    make_pdf(root / "교재" / "a.pdf")
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    keys_before = {r["page_key"] for r in db.conn.execute("SELECT page_key FROM pages")}
+    assert keys_before
+
+    (root / "기출문제 및 서브노트").mkdir()
+    shutil.move(str(root / "교재" / "a.pdf"), str(root / "기출문제 및 서브노트" / "a.pdf"))   # 수정 시각 유지
+    calls = []
+    orig = job.index_local_file
+    monkeypatch.setattr(job, "index_local_file", lambda *a, **k: calls.append(a) or orig(*a, **k))
+    job.start(str(root), drive_factory=lambda: LocalFolder(root)); job.thread.join(30)
+    s = job.status()
+    assert s["phase"] == "완료" and s.get("moved") == 1 and not calls, s          # 다시 분석하지 않음
+    assert {r["page_key"] for r in db.conn.execute("SELECT page_key FROM pages")} == keys_before
+    assert db.search("budget")[0]["path"] == "/기출문제 및 서브노트"
+    ap = db.conn.execute("SELECT abs_path FROM files").fetchone()[0]
+    assert ap.endswith("a.pdf") and "서브노트" in ap
