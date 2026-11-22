@@ -393,6 +393,9 @@ def test_skeleton_uses_user_checked_terms(exported, tmp_path):
     (sd / "_사용자확인.json").write_text(json.dumps({"version": 1, "terms": {
         "초전도 거푸집": {"v": "ok", "q": "140-1-1"}, "양자 철근": {"v": "del", "q": "140-1-1"},
         "무관한 표현": {"v": "del"}, "보류할 말": {"v": "hold"}}}, ensure_ascii=False), encoding="utf-8")
+    # 학습앱 '검수에 보내기' 형식(B)도 읽음 — 나중 파일이 우선
+    (sd / "_사용자확인_20261122-0930.json").write_text(json.dumps({"sent": "x", "items": {"140-1-1": {
+        "ng:보류할 말": "del", "toc:1. 정의": "del"}}}, ensure_ascii=False), encoding="utf-8")
     work = tmp_path / "work6"
     FakeGemini.calls = []
     FakeGemini.reply = {"toc": [{"h": "a", "kw": ["초전도 거푸집", "양자 철근"]}, {"h": "b", "kw": []}, {"h": "c", "kw": []}]}
@@ -408,5 +411,32 @@ def test_skeleton_uses_user_checked_terms(exported, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     prompt = FakeGemini.calls[0][2]["contents"][0]["parts"][0]["text"]
     assert "쓰지 말 표현" in prompt and "양자 철근" in prompt and "무관한 표현" not in prompt
+    assert "사용자 확인(2개 파일): 근거 있음 1개, 쓰지 말 표현 3개" in r.stdout, r.stdout
     a = json.loads((sd / "out" / "골격_140회.json").read_text(encoding="utf-8"))["items"]["140-1-9"]
     assert a["src_check"]["ng"] == ["양자 철근"]
+
+
+def test_skeleton_priority_order(exported, tmp_path):
+    """_우선순위.json 이 있으면 그 순서대로 만듦 (학습앱이 중요 토픽 순으로 정함)."""
+    out, _, _ = exported
+    sd = tmp_path / "gdrive"
+    sd.mkdir()
+    items = [{"id": f"139-1-{i}", "r": 139, "p": 1, "q": f"문제 {i}", "ref": ""} for i in range(1, 5)]
+    (sd / "gem_input.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    (sd / "prompt.txt").write_text("{{Q}} {{TYPE}} {{REF}}", encoding="utf-8")
+    (sd / "_우선순위.json").write_text(json.dumps({"ids": ["139-1-3", "139-1-1"]}), encoding="utf-8")
+    work = tmp_path / "work7"
+    FakeGemini.calls = []
+    FakeGemini.reply = {"toc": [{"h": "a", "kw": []}, {"h": "b", "kw": []}, {"h": "c", "kw": []}]}
+    srv = HTTPServer(("127.0.0.1", 0), FakeGemini)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        r = subprocess.run([sys.executable, "-I", str(NAS / "skeleton.py"), "--limit", "2"], capture_output=True, text=True,
+                           timeout=120, env=dict(os.environ, DRIVE_INDEX_DIR=str(out), SKEL_WORK=str(work), SKEL_DIR=str(sd),
+                                                 GEMINI_API_KEY="k", SKEL_SLEEP="0", API_PORT="1",
+                                                 GEMINI_BASE=f"http://127.0.0.1:{srv.server_port}/v1beta"))
+    finally:
+        srv.shutdown()
+    assert r.returncode == 0, r.stdout + r.stderr
+    asked = [c[2]["contents"][0]["parts"][0]["text"].split()[1] for c in FakeGemini.calls]
+    assert asked == ["3", "1"], asked

@@ -59,7 +59,8 @@ def copy_if_changed(src, dst):
         f.write(data)
     return True
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
-INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt", "_사용자확인.json")
+INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt", "_우선순위.json")
+EXTRA_GLOB = "_사용자확인"         # _사용자확인.json, _사용자확인_20261122-0930.json … (학습앱 '검수에 보내기')
 # 학습앱에서 사용자가 ⚠ 항목을 정리한 결과 (gemini/_사용자확인.json)
 #  {"version":1, "terms": {"표현": {"v": "ok"|"del"|"hold", "q": "140-1-1", "at": "2026-11-22"}}}
 #  ok  = 교재에서 확인함 → 출처 확인에서 '근거 있음'으로 침
@@ -100,11 +101,13 @@ def rclone(*args):
 
 def pull(inp, prev):
     if local_mode():
-        for n in INPUTS:
+        want = set(INPUTS) | {n for n in os.listdir(SKEL_DIR) if n.startswith(EXTRA_GLOB) and n.endswith(".json")}
+        for n in want:
             if os.path.isfile(os.path.join(SKEL_DIR, n)):
                 copy_if_changed(os.path.join(SKEL_DIR, n), os.path.join(inp, n))
-            elif n == "_사용자확인.json" and os.path.exists(os.path.join(inp, n)):
-                os.remove(os.path.join(inp, n))      # 드라이브에서 지웠으면 예전 것도 쓰지 않음
+        for n in os.listdir(inp):                    # 드라이브에서 지운 사용자확인·우선순위 파일은 NAS에서도 지움
+            if (n.startswith(EXTRA_GLOB) or n == "_우선순위.json") and not os.path.isfile(os.path.join(SKEL_DIR, n)):
+                os.remove(os.path.join(inp, n))
         od = os.path.join(SKEL_DIR, "out")
         for n in (os.listdir(od) if os.path.isdir(od) else []):
             if n.startswith("골격_") and n.endswith("회.json"):
@@ -113,6 +116,7 @@ def pull(inp, prev):
     flt = []
     for n in INPUTS:
         flt += ["--include", "/" + n]
+    flt += ["--include", "/%s*.json" % EXTRA_GLOB]
     rclone("copy", REMOTE, inp, *flt)
     rclone("copy", REMOTE + "/out", prev, "--include", "/골격_*회.json")
 
@@ -380,23 +384,49 @@ def _check_terms(terms):
     return out
 
 
-def load_user_check(path):
-    """_사용자확인.json 읽기. 없거나 깨졌으면 빈 값."""
+def load_user_check(folder):
+    """학습앱의 ⚠ 정리 결과 읽기 (folder 안의 _사용자확인*.json 전부, 이름순 = 시간순, 나중 것이 우선).
+
+    형식 A: {"terms": {"표현": {"v": "ok|del|hold"}}}
+    형식 B (학습앱 '검수에 보내기'): {"items": {"140-1-1": {"ng:표현": "ok|del|hold", "toc:목차": "..."}}}
+            → ng: 항목만 씀 (toc: 는 목차 제목이라 표현 목록으로 쓰지 않음)
+    """
     global USER_OK, USER_DEL
-    USER_OK, USER_DEL = set(), []
+    marks = {}
     try:
-        terms = (json.loads(read(path, "") or "{}").get("terms") or {})
-    except (ValueError, AttributeError):
-        log("  _사용자확인.json 형식 오류 → 무시")
-        return
-    for t, v in terms.items():
-        mark = (v or {}).get("v") if isinstance(v, dict) else v
-        if mark == "ok":
-            USER_OK.add(norm(t))
-        elif mark == "del":
-            USER_DEL.append(t)
+        names = sorted(n for n in os.listdir(folder) if n.startswith(EXTRA_GLOB) and n.endswith(".json"))
+    except OSError:
+        names = []
+    for n in names:
+        try:
+            d = json.loads(read(os.path.join(folder, n), "") or "{}")
+        except ValueError:
+            log("  %s 형식 오류 → 무시" % n)
+            continue
+        for t, v in (d.get("terms") or {}).items():
+            marks[t] = (v or {}).get("v") if isinstance(v, dict) else v
+        for _qid, kv in (d.get("items") or {}).items():
+            for k, v in (kv or {}).items():
+                if str(k).startswith("ng:"):
+                    marks[k[3:]] = v
+    USER_OK = {norm(t) for t, v in marks.items() if v == "ok"}
+    USER_DEL = [t for t, v in marks.items() if v == "del"]
     if USER_OK or USER_DEL:
-        log("사용자 확인: 근거 있음 %d개, 쓰지 말 표현 %d개" % (len(USER_OK), len(USER_DEL)))
+        log("사용자 확인(%d개 파일): 근거 있음 %d개, 쓰지 말 표현 %d개" % (len(names), len(USER_OK), len(USER_DEL)))
+
+
+def load_priority(folder):
+    """학습앱이 정한 생성 순서 (_우선순위.json: ["140-1-1", …] 또는 {"ids": […]}). 없으면 None."""
+    txt = read(os.path.join(folder, "_우선순위.json"))
+    if not txt:
+        return None
+    try:
+        d = json.loads(txt)
+    except ValueError:
+        log("  _우선순위.json 형식 오류 → 무시")
+        return None
+    ids = d.get("ids") if isinstance(d, dict) else d
+    return {str(x): i for i, x in enumerate(ids or [])} or None
 
 
 def banned_for(text, limit=30):
@@ -564,7 +594,8 @@ def main():
     t1, t2 = read(os.path.join(inp, "type_1.txt"), ""), read(os.path.join(inp, "type_2.txt"), "")
     model = os.environ.get("SKEL_MODEL") or (read(os.path.join(inp, "model.txt"), "") or "").strip() or "gemini-flash-latest"
     write_questions(items)
-    load_user_check(os.path.join(inp, "_사용자확인.json"))
+    load_user_check(inp)
+    prio = load_priority(inp)
     if not items or "{{Q}}" not in tpl:
         log("입력 파일(gem_input.json / prompt.txt)이 비었습니다")
         return 1
@@ -576,6 +607,9 @@ def main():
 
     todo = [it for it in items if (not args.only or it["id"] == args.only)
             and (args.redo or not os.path.exists(os.path.join(raw2, it["id"] + ".json")))]
+    if prio:                             # 학습앱이 중요 토픽 순으로 정해 준 순서 (목록에 없는 문제는 원래 순서로 뒤에)
+        todo.sort(key=lambda it: prio.get(it["id"], len(prio)))
+        log("우선순위 파일 적용 (%d문제)" % len(prio))
     limit = args.limit if args.limit > 0 else DEFAULT_PER_RUN
     log("남은 문제 %d / 전체 %d · 이번 실행 최대 %d문제" % (len(todo), len(items), limit))
     st = {"started": time.strftime("%Y-%m-%d %H:%M"), "model": model, "made": 0, "errors": 0, "tokens_in": 0,
