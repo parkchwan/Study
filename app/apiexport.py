@@ -345,7 +345,94 @@ def export_api(db: DB, out_dir: Path, budget_s: float | None = None) -> dict:
 
     # 2) 드라이브용 전체 색인 (책별 JSONL)
     files = _write_jsonl_split(by_book, api / "export")
-    return {"pages": len(lines), "images_made": made, "images_pending": pending, "jsonl": files}
+    # 3) 학습앱이 요청한 페이지 전체 이미지 (주제 비교 탭) — 색인에 없는 글 페이지도 PDF에서 그림
+    left = None if budget_s is None else max(0.0, budget_s - (time.time() - started))
+    req = export_requested_pages(db, api / "export" / "pages", left)
+    return {"pages": len(lines), "images_made": made, "images_pending": pending + req.get("pending", 0),
+            "jsonl": files, "page_request": req}
+
+
+REQ_PX, REQ_Q = 1400, 70          # 긴 변 1400px, JPEG 품질 70 (한 장 150KB 안팎)
+
+
+def request_path() -> Path:
+    """학습앱이 드라이브 gemini 폴더에 두는 페이지 요청 파일 (PC는 Google Drive for desktop 경로로 읽음)."""
+    return settings.questions_path.parent / "_페이지요청.json"
+
+
+def export_requested_pages(db: DB, dst: Path, budget_s: float | None = None) -> dict:
+    """_페이지요청.json 의 page_keys 를 dst/<page_key>.jpg 로 (이미 있으면 건너뜀, 요청에서 빠진 건 지움).
+
+    결과는 요청 파일 옆 _페이지요청_결과.json 에 남김 → 학습앱이 확인."""
+    import pymupdf as fitz
+    path = request_path()
+    try:
+        req = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    keys = [str(k) for k in (req.get("page_keys") if isinstance(req, dict) else req) or []]
+    dst.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    want = set(keys)
+    made = have = 0
+    missing, pending = [], 0
+    docs: dict[str, object] = {}
+    try:
+        for key in sorted(keys):                       # 같은 책끼리 → 한 번만 엶
+            out = dst / f"{key}.jpg"
+            if out.exists() and out.stat().st_size > 0:
+                have += 1
+                continue
+            if budget_s is not None and time.time() - started > budget_s:
+                pending += 1
+                continue
+            fid, _, no = key.rpartition("_")
+            ap = db.file_abs_path(fid) if fid else None
+            if not ap or not no.isdigit() or not Path(ap).exists() or Path(ap).suffix.lower() != ".pdf":
+                missing.append(key)
+                continue
+            try:
+                doc = docs.get(ap)
+                if doc is None:
+                    for d in docs.values():
+                        d.close()
+                    docs.clear()
+                    doc = docs[ap] = fitz.open(ap)
+                n = int(no)
+                if not 1 <= n <= doc.page_count:
+                    missing.append(key)
+                    continue
+                page = doc[n - 1]
+                zoom = REQ_PX / max(page.rect.width, page.rect.height, 1)
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+                im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples) if pix.n == 3 \
+                    else Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                _save_jpg(im, out, REQ_Q)
+                made += 1
+                if made % 50 == 0:
+                    fitz.TOOLS.store_shrink(100)
+            except Exception as e:                     # 깨진 쪽 하나가 전체를 멈추지 않게
+                log.warning("요청 페이지 실패 %s: %s", key, e)
+                missing.append(key)
+    finally:
+        for d in docs.values():
+            d.close()
+    removed = 0
+    for f in dst.glob("*.jpg"):                        # 요청 목록에서 빠진 페이지 정리
+        if f.stem not in want:
+            f.unlink()
+            removed += 1
+    res = {"requested": len(keys), "made": made, "existing": have, "pending": pending,
+           "missing": len(missing), "removed": removed}
+    try:
+        report = dict(res, at=time.strftime("%Y-%m-%d %H:%M"), missing_keys=missing[:200],
+                      folder="_drive_index_export/pages", done=pending == 0)
+        tmp = path.with_name("_페이지요청_결과.json.part")
+        tmp.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path.with_name("_페이지요청_결과.json"))
+    except OSError as e:
+        log.warning("페이지 요청 결과 기록 실패: %s", e)
+    return res
 
 
 if __name__ == "__main__":      # python -m app.apiexport [EXPORT_DIR]

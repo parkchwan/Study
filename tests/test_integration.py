@@ -440,3 +440,29 @@ def test_skeleton_priority_order(exported, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     asked = [c[2]["contents"][0]["parts"][0]["text"].split()[1] for c in FakeGemini.calls]
     assert asked == ["3", "1"], asked
+
+
+def test_requested_full_pages_exported(exported, tmp_path, monkeypatch):
+    """학습앱 _페이지요청.json → export/pages/<page_key>.jpg (색인에 없는 글 페이지도 PDF에서 그림)."""
+    from PIL import Image
+    from app import config
+    from app.apiexport import export_requested_pages
+    out, _, db = exported
+    fid, ap = db.conn.execute("SELECT file_id, abs_path FROM files").fetchone()
+    doc = fitz.open(ap)                       # 글만 있는 3쪽을 덧붙임 (색인에는 없는 쪽)
+    doc.new_page().insert_text((72, 72), "서술형 답안 둘째 쪽 글만 있음", fontname="korea")
+    doc.saveIncr(); doc.close()
+    gem = tmp_path / "gemini"; gem.mkdir()
+    monkeypatch.setattr(config.settings, "questions_file", str(gem / "gem_input.json"))
+    keys = [f"{fid}_1", f"{fid}_3", f"{fid}_99", "Lnosuchfile_1"]
+    (gem / "_페이지요청.json").write_text(json.dumps({"version": 1, "page_keys": keys}), encoding="utf-8")
+    dst = out / "api" / "export" / "pages"
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "Lold_1.jpg").write_bytes(b"x")    # 요청에서 빠진 예전 파일은 지움
+    r = export_requested_pages(db, dst)
+    assert r == {"requested": 4, "made": 2, "existing": 0, "pending": 0, "missing": 2, "removed": 1}, r
+    im = Image.open(dst / f"{fid}_3.jpg")
+    assert max(im.size) == 1400
+    rep = json.loads((gem / "_페이지요청_결과.json").read_text(encoding="utf-8"))
+    assert rep["done"] and rep["missing_keys"] == [f"{fid}_99", "Lnosuchfile_1"]
+    assert export_requested_pages(db, dst)["existing"] == 2           # 두 번째는 건너뜀
