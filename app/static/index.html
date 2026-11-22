@@ -163,7 +163,7 @@
 <script>
 const STATIC_MODE = false;   // 내보내기(NAS) 버전에서는 true 로 바뀜 → 서버 없이 브라우저에서 검색
 const KINDS = { "": "전체", figure: "그림", table: "표", flowchart: "플로우차트", chart: "차트",
-                diagram: "다이어그램", photo: "사진", screenshot: "스크린샷", handwriting: "필기" };
+                diagram: "다이어그램", photo: "사진", screenshot: "스크린샷", handwriting: "필기", text: "본문" };
 const $ = id => document.getElementById(id);
 let state = { q: "", kind: "", results: [], cur: -1, byKind: {} };
 const prefetched = new Set();

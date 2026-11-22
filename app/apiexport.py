@@ -28,7 +28,8 @@ PAGE_W, FIG_W = 1200, 800
 FIGS = Path("export") / "figs"          # api/ 아래 그림 조각 폴더
 PAGE_Q, FIG_Q = 75, 70
 MAX_JSONL = 40 * 1024 * 1024
-KIND_KO = {"table": "표", "handwriting": "본문"}       # 나머지(그림·플로우차트·차트·도해·사진)는 '그림'
+KIND_KO = {"table": "표", "handwriting": "본문", "text": "본문"}
+NO_FIG = ("handwriting", "text")        # 그림 조각을 만들지 않는 항목 (손글씨·글 페이지)       # 나머지(그림·플로우차트·차트·도해·사진)는 '그림'
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
 
 
@@ -110,7 +111,7 @@ def assign_regions(kinds: list[str], regions: list[tuple[object, str]]) -> list[
     others = [r for r, t in regions if t != "table"]
     out: list[object | None] = []
     for k in kinds:
-        if k == "handwriting":
+        if k in NO_FIG:
             out.append(None)
             continue
         pool = tables if k == "table" and tables else (others if others else tables)
@@ -185,7 +186,7 @@ def make_assets(page: dict, out_api: Path, rend: _Renderer) -> list[str | None]:
     names: list[str | None] = []
     whole = None
     for i, (k, r) in enumerate(zip(kinds, rects)):
-        if k == "handwriting":
+        if k in NO_FIG:
             names.append(None)
             continue
         if r is not None:

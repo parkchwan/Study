@@ -65,7 +65,7 @@ class IndexJob:
                     st["stopped_reason"] = router.last_error or "AI 사용 한도 소진"
                     break
                 st["current"] = f"{meta['path'].rstrip('/')}/{meta['name']}"
-                expected = f"{meta['version_key']}|{analysis_signature()}"
+                expected = f"{meta['version_key']}|{self._signature(meta)}"
                 if meta["version_key"] and self.db.file_version(meta["file_id"]) == expected:
                     st["skipped"] += 1          # 변경 없음 → 다운로드/AI 모두 생략
                     st["done"] += 1
@@ -104,6 +104,16 @@ class IndexJob:
         finally:
             st["running"] = False
             st["finished"] = time.time()
+
+    @staticmethod
+    def full_pages(meta: dict) -> bool:
+        """글만 있는 페이지까지 전부 색인할 파일인가 (FULL_PAGE_DIRS 폴더 안)."""
+        parts = [x for x in str(meta.get("path") or "").replace("\\", "/").split("/") if x]
+        return any(x in settings.full_page_dirs for x in parts)
+
+    def _signature(self, meta: dict) -> str:
+        # 전체 페이지 모드가 켜지거나 꺼지면 그 파일만 한 번 다시 처리 (그림 분석은 캐시라 추가 비용 없음)
+        return analysis_signature() + ("|full" if self.full_pages(meta) else "")
 
     def _follow_moves(self, files: list[dict], root_key: str, st: dict) -> None:
         """폴더를 옮기거나 정리한 파일 알아보기: 사라진 파일과 이름·크기가 같은 새 파일이 하나뿐이면 같은 파일로 봄.
@@ -190,6 +200,7 @@ class IndexJob:
         st = self.state
         st["page"], st["pages"] = 0, (extract.count_pages(local) if local.suffix.lower() == ".pdf" else 0)
         use_ai = router is not None and router.configured
+        full = self.full_pages(meta)
         conc = settings.vision_concurrency if use_ai else 1
         out = {"pages": [], "items": 0, "incomplete": False}
 
@@ -214,6 +225,11 @@ class IndexJob:
             if res is None and not items and pi.has_visual:
                 # AI를 못 쓴 경우에만 로컬 추정으로 채움. AI가 '시각자료 없음'이라 답하면 그 판단을 따름
                 items = pi.local_items()
+            if not items and full:
+                # 기출 풀이·서브노트: 그림 없는 글 페이지(서술형 답안 중간 쪽 등)도 검색·보기에 나오게 '본문'으로 저장
+                lines = [l.strip() for l in (pi.text or "").splitlines() if l.strip()]
+                items = [{"kind": "text", "title": (lines[0] if lines else f"{pi.page_no}쪽")[:60],
+                          "description": " ".join(lines)[:300], "source": "local"}]
             st["page"] = pi.page_no
             if not items:
                 return      # 시각 요소 없는 페이지는 색인·렌더 생략 (저장공간/시간 절약)
@@ -243,7 +259,7 @@ class IndexJob:
             meta["version_key"] = ""
             st["incomplete"] = st.get("incomplete", 0) + 1
         elif meta.get("version_key"):
-            meta["version_key"] = f"{meta['version_key']}|{analysis_signature()}"
+            meta["version_key"] = f"{meta['version_key']}|{self._signature(meta)}"
         # 이번에 색인되지 않은 예전 페이지 이미지는 삭제 (로고·빈 양식 등 잘못 잡혔던 페이지 정리)
         self._remove_renders(self.db.page_keys(meta["file_id"]) - {p["page_key"] for p in out["pages"]})
         self.db.save_file(meta, out["pages"])

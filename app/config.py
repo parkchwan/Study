@@ -57,6 +57,9 @@ class Settings:
     enrich: bool = field(default_factory=lambda: os.getenv("ENRICH", "on").lower() in ("on", "1", "true", "yes"))
     enrich_max_pages: int = field(default_factory=lambda: _int("ENRICH_MAX_PAGES", 0))
 
+    # 그림이 없는 글 페이지까지 전부 색인할 폴더 이름 (쉼표로 여러 개). 기출 풀이·서브노트처럼 답안 글 페이지도 봐야 하는 자료
+    full_page_dirs: list = field(default_factory=lambda: [x.strip() for x in os.getenv(
+        "FULL_PAGE_DIRS", "기출문제 및 서브노트").split(",") if x.strip()])
     # 기출문제 목록(학습 앱의 gem_input.json). 비우면 기본 폴더 아래 _답안골격_교재그림/gemini/gem_input.json
     questions_file: str = field(default_factory=lambda: os.getenv("QUESTIONS_FILE", ""))
 

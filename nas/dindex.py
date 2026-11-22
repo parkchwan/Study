@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.request
 
-KIND_KO = {"table": "표", "handwriting": "본문"}
+KIND_KO = {"table": "표", "handwriting": "본문", "text": "본문"}
 _NORM = re.compile(r"[\s\-_·.,/()\[\]{}:;'\"!?~]+")
 STOPQ = {"따른", "따라", "대한", "대하여", "관한", "관련", "위한", "의한", "통한", "및", "또는", "그리고", "등", "등의",
          "의", "에", "와", "과", "시", "때"}
@@ -319,7 +319,7 @@ class Index(object):
         best, bi = -1.0, 0
         for i, it in enumerate(p.items):
             s = norm("%s %s %s" % (it[1], it[3], it[2]))
-            sc = sum(1 for u in qn if u in s) + (0.5 if it[0] != "handwriting" else 0) + (0.3 if it[4] else 0)
+            sc = sum(1 for u in qn if u in s) + (0.5 if it[0] not in ("handwriting", "text") else 0) + (0.3 if it[4] else 0)
             if sc > best:
                 best, bi = sc, i
         return bi

@@ -292,7 +292,7 @@ def build_ref(q_ref, picks, n_img):
     lines = ["[교재 근거 — 아래 교재 페이지의 용어·분류·비교 항목·표현을 그대로 쓸 것]"]
     for i, r in enumerate(picks):
         its = "; ".join("%s: %s" % ({"table": "표"}.get(it[0], "그림"), it[1]) for it in r["_items"]
-                        if it[0] != "handwriting" and it[1])[:200]
+                        if it[0] not in ("handwriting", "text") and it[1])[:200]
         lines.append("%s %s p.%d%s%s | 본문: %s" % (
             marks[i], r["book"], r["page"], (" | " + its) if its else "",
             (" | 요약: " + r["summary"]) if r["summary"] else "", r["text"][:600]))
@@ -309,7 +309,7 @@ def page_images(picks, n=N_IMG):
     for i, r in enumerate(picks):
         if len(out) >= n:
             break
-        if not r["page_img"] or not any(it[0] != "handwriting" for it in r["_items"]):
+        if not r["page_img"] or not any(it[0] not in ("handwriting", "text") for it in r["_items"]):
             continue
         try:
             with open(os.path.join(API_DIR, r["page_img"]), "rb") as f:
@@ -353,7 +353,7 @@ def attach_src(fig, index, picks, key):
     best, best_sc = None, 0.0
     for r in cands:
         for it in r["_items"]:
-            if not it[4] or it[0] == "handwriting":
+            if not it[4] or it[0] in ("handwriting", "text"):
                 continue
             sc = match_score(title, every, "%s %s" % (it[1], it[3]), (it[0] == "table") == want_table)
             if sc > best_sc:

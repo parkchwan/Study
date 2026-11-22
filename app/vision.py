@@ -70,7 +70,7 @@ _KEEP = ("체크리스트", "checklist", "check list")
 
 def is_junk(item: dict) -> bool:
     """AI가 지시를 어기고 넣은 로고·워터마크·머리글, 목차·색인·단순 목록 같은 항목인지."""
-    if item.get("kind") == "handwriting":
+    if item.get("kind") in ("handwriting", "text"):     # 손글씨·글 페이지(전체 페이지 모드)는 거르지 않음
         return False
     title = str(item.get("title", "")).lower()
     text = f"{title} {str(item.get('description', ''))[:80].lower()}"
