@@ -793,6 +793,12 @@ async function searchByImage(f) {
 // ── 다른 앱에서 '공유 → 시각자료 색인'으로 받은 글자·사진 처리 (sw.js가 넘겨 줌) ──
 async function handleShare() {
   const P = new URLSearchParams(location.search), kind = P.get("share");
+  const direct = (P.get("q") || "").trim();       // 다른 앱(학습앱)에서 '?q=검색어' 링크로 열기
+  if (!kind && direct) {
+    history.replaceState(null, "", location.pathname);
+    $("q").value = direct; state.q = direct; qManual = false; fitQ(); remember(direct); search();
+    return;
+  }
   if (!kind) return;
   history.replaceState(null, "", location.pathname);           // 새로고침해도 다시 실행되지 않게
   if (kind === "image") {
