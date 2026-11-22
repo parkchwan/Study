@@ -59,7 +59,12 @@ def copy_if_changed(src, dst):
         f.write(data)
     return True
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta")
-INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt")
+INPUTS = ("gem_input.json", "prompt.txt", "type_1.txt", "type_2.txt", "model.txt", "_사용자확인.json")
+# 학습앱에서 사용자가 ⚠ 항목을 정리한 결과 (gemini/_사용자확인.json)
+#  {"version":1, "terms": {"표현": {"v": "ok"|"del"|"hold", "q": "140-1-1", "at": "2026-11-22"}}}
+#  ok  = 교재에서 확인함 → 출처 확인에서 '근거 있음'으로 침
+#  del = 교재에 없음(삭제) → 앞으로 골격을 만들 때 그 표현을 쓰지 말라고 Gemini에 알려 줌
+USER_OK, USER_DEL = set(), []
 N_REF, N_IMG = 8, 4
 DEFAULT_PER_RUN = 40      # 한 번 실행에 만드는 최대 문제 수 (SKEL_MAX 로 바꿈, 0이면 이 값). 유료 키 비용 안전장치
 FLUSH_EVERY = 5           # 5문제마다(또는 한 회차가 끝날 때마다) 드라이브에 올림
@@ -98,6 +103,8 @@ def pull(inp, prev):
         for n in INPUTS:
             if os.path.isfile(os.path.join(SKEL_DIR, n)):
                 copy_if_changed(os.path.join(SKEL_DIR, n), os.path.join(inp, n))
+            elif n == "_사용자확인.json" and os.path.exists(os.path.join(inp, n)):
+                os.remove(os.path.join(inp, n))      # 드라이브에서 지웠으면 예전 것도 쓰지 않음
         od = os.path.join(SKEL_DIR, "out")
         for n in (os.listdir(od) if os.path.isdir(od) else []):
             if n.startswith("골격_") and n.endswith("회.json"):
@@ -373,7 +380,41 @@ def _check_terms(terms):
     return out
 
 
+def load_user_check(path):
+    """_사용자확인.json 읽기. 없거나 깨졌으면 빈 값."""
+    global USER_OK, USER_DEL
+    USER_OK, USER_DEL = set(), []
+    try:
+        terms = (json.loads(read(path, "") or "{}").get("terms") or {})
+    except (ValueError, AttributeError):
+        log("  _사용자확인.json 형식 오류 → 무시")
+        return
+    for t, v in terms.items():
+        mark = (v or {}).get("v") if isinstance(v, dict) else v
+        if mark == "ok":
+            USER_OK.add(norm(t))
+        elif mark == "del":
+            USER_DEL.append(t)
+    if USER_OK or USER_DEL:
+        log("사용자 확인: 근거 있음 %d개, 쓰지 말 표현 %d개" % (len(USER_OK), len(USER_DEL)))
+
+
+def banned_for(text, limit=30):
+    """이 문제와 관련 있어 보이는 '쓰지 말 표현' (표현 속 낱말이 문제·참고글에 나오는 것)."""
+    t = norm(text)
+    out = []
+    for term in USER_DEL:
+        toks = [norm(x) for x in TOK.findall(term) if len(norm(x)) >= 2]
+        if toks and any(x in t for x in toks):
+            out.append(term)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def found(index, term):
+    if norm(term) in USER_OK:          # 사용자가 교재에서 확인한 표현
+        return True
     if index.contains(term):
         return True
     parts = [p for p in SPLIT.split(term) if p and len(norm(p)) >= 2 and norm(p) not in GENERIC and not NUMERIC.match(norm(p))]
@@ -523,6 +564,7 @@ def main():
     t1, t2 = read(os.path.join(inp, "type_1.txt"), ""), read(os.path.join(inp, "type_2.txt"), "")
     model = os.environ.get("SKEL_MODEL") or (read(os.path.join(inp, "model.txt"), "") or "").strip() or "gemini-flash-latest"
     write_questions(items)
+    load_user_check(os.path.join(inp, "_사용자확인.json"))
     if not items or "{{Q}}" not in tpl:
         log("입력 파일(gem_input.json / prompt.txt)이 비었습니다")
         return 1
@@ -627,6 +669,9 @@ def make_one(it, index, key, model, tpl, t1, t2):
     # 첨부 이미지를 ①②③… 순서와 맞추려고, 이미지가 있는 페이지를 앞으로
     picks = [picks[i] for i in used] + [r for i, r in enumerate(picks) if i not in used]
     ref = build_ref(it.get("ref") or "", picks, len(imgs))
+    ban = banned_for(it["q"] + " " + " ".join("%s %s" % (r.get("summary", ""), r.get("text", "")) for r in picks))
+    if ban:
+        ref += "\n\n[쓰지 말 표현 — 수험생이 교재에 없다고 확인함]\n" + ", ".join(ban)
     prompt = tpl.replace("{{Q}}", it["q"]).replace("{{TYPE}}", t1 if it["p"] == 1 else t2).replace("{{REF}}", ref)
     t_in = t_out = 0
     obj = None
